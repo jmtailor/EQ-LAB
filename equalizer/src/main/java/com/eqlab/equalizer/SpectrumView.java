@@ -10,13 +10,16 @@ import android.view.MotionEvent;
 import android.view.View;
 
 /**
- * 스펙트럼 막대(원음·적용 후·피크), EQ 곡선, 10개 조절점을 그리는 뷰.
+ * 스펙트럼 막대(원음·적용 후·피크), EQ 곡선, 대역별 조절점(11개)을 그리는 뷰.
  * 조절점 근처를 위아래로 끌어 해당 대역의 게인을 바꿀 수 있다.
+ * 가로 위치는 대역 번호에 비례한다(0번 20Hz ... 마지막 16kHz). 막대는 31Hz(1번)부터 16kHz까지만 분석한다.
  */
 public class SpectrumView extends View {
     interface Callback {
         void onBand(int band, int gainDb);
     }
+
+    private static final int LAST = EqEngine.BANDS - 1;
 
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -28,7 +31,7 @@ public class SpectrumView extends View {
     private final long[] peakTime = new long[SpectrumState.BARS];
     private long lastFrame = 0;
 
-    private int[] gains = new int[10];
+    private int[] gains = new int[EqEngine.BANDS];
     private boolean eqOn = true;
     private boolean showOrig = true;
     private boolean showPost = true;
@@ -64,7 +67,7 @@ public class SpectrumView extends View {
     }
 
     private float gainAt(double pos) {
-        int lo = Math.min(8, (int) Math.floor(pos));
+        int lo = Math.max(0, Math.min(LAST - 1, (int) Math.floor(pos)));
         double f = pos - lo;
         double t = (1 - Math.cos(Math.PI * f)) / 2;
         float a = eqOn ? gains[lo] : 0;
@@ -96,13 +99,14 @@ public class SpectrumView extends View {
         boolean live = SpectrumState.running;
         float[] db = SpectrumState.db;
 
-        // 막대
+        // 막대 (31Hz 위치부터 오른쪽 끝까지)
         int n = SpectrumState.BARS;
         float gap = dp(3);
-        float bw = (w - gap * (n - 1)) / n;
+        float barL = l + w / LAST;
+        float bw = (r - barL - gap * (n - 1)) / n;
         for (int i = 0; i < n; i++) {
-            float x = l + i * (bw + gap);
-            float g = gainAt(i / (double) (n - 1) * 9.0);
+            float x = barL + i * (bw + gap);
+            float g = gainAt(1 + i / (double) (n - 1) * (LAST - 1));
             float orig = live ? level(db[i]) : 0f;
             float post = live ? level(db[i] + g) : 0f;
             if (showOrig && orig > 0) {
@@ -140,7 +144,7 @@ public class SpectrumView extends View {
         float amp = h / 2f * 0.88f;
         for (int k = 0; k <= 60; k++) {
             float x = l + (k / 60f) * w;
-            float y = midY - gainAt(k / 60.0 * 9.0) / 12f * amp;
+            float y = midY - gainAt(k / 60.0 * LAST) / 12f * amp;
             if (k == 0) path.moveTo(x, y);
             else path.lineTo(x, y);
         }
@@ -150,8 +154,8 @@ public class SpectrumView extends View {
         canvas.drawPath(path, line);
 
         // 조절점
-        for (int i = 0; i < 10; i++) {
-            float x = l + i / 9f * w;
+        for (int i = 0; i < EqEngine.BANDS; i++) {
+            float x = l + i / (float) LAST * w;
             float y = midY - (eqOn ? gains[i] : 0) / 12f * amp;
             boolean act = i == active;
             float rad = dp(act ? 8 : 5);
@@ -165,12 +169,12 @@ public class SpectrumView extends View {
         // 글자
         text.setColor(Theme.MUTED);
         text.setTextAlign(Paint.Align.LEFT);
-        canvas.drawText("31", l, getHeight() - dp(9), text);
+        canvas.drawText("20", l, getHeight() - dp(9), text);
         text.setTextAlign(Paint.Align.CENTER);
-        String[] marks = {"250", "1k", "4k"};
-        float[] pos = {0.3333f, 0.5555f, 0.7777f};
+        String[] marks = {"31", "250", "1k", "4k"};
+        int[] idx = {1, 4, 6, 8};
         for (int i = 0; i < marks.length; i++) {
-            canvas.drawText(marks[i], l + pos[i] * w, getHeight() - dp(9), text);
+            canvas.drawText(marks[i], l + idx[i] / (float) LAST * w, getHeight() - dp(9), text);
         }
         text.setTextAlign(Paint.Align.RIGHT);
         canvas.drawText("16k Hz", r, getHeight() - dp(9), text);
@@ -209,14 +213,14 @@ public class SpectrumView extends View {
                 if (e.getY() < plotT() - dp(14) || e.getY() > plotB() + dp(6)) return false;
                 int best = -1;
                 float bestDist = Float.MAX_VALUE;
-                for (int i = 0; i < 10; i++) {
-                    float d = Math.abs(e.getX() - (l + i / 9f * w));
+                for (int i = 0; i < EqEngine.BANDS; i++) {
+                    float d = Math.abs(e.getX() - (l + i / (float) LAST * w));
                     if (d < bestDist) {
                         bestDist = d;
                         best = i;
                     }
                 }
-                if (best < 0 || bestDist > w / 9f * 0.6f) return false;
+                if (best < 0 || bestDist > w / LAST * 0.6f) return false;
                 dragging = best;
                 getParent().requestDisallowInterceptTouchEvent(true);
                 move(e.getY());

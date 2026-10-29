@@ -300,7 +300,7 @@ public class MainActivity extends Activity implements EqEngine.Listener {
         headText.setOrientation(LinearLayout.VERTICAL);
         headText.setPadding(dp(8), 0, 0, 0);
         headText.addView(text("대역별 조절", 14, Theme.TEXT, true));
-        headText.addView(text("좌우로 밀어 10개 대역 조절", 12, Theme.MUTED, false));
+        headText.addView(text("좌우로 밀어 " + EqEngine.BANDS + "개 대역 조절", 12, Theme.MUTED, false));
         head.addView(headText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView reset = text("초기화", 14, Theme.MUTED, false);
         reset.setGravity(Gravity.CENTER);
@@ -459,14 +459,7 @@ public class MainActivity extends Activity implements EqEngine.Listener {
         List<String[]> customs = EqEngine.customPresets(this);
         presetList.addView(text("내 프리셋", 13, Theme.MUTED, false), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 16));
         for (String[] cp : customs) {
-            String[] parts = cp[1].split(",");
-            int[] g = new int[10];
-            for (int i = 0; i < 10 && i < parts.length; i++) {
-                try {
-                    g[i] = Integer.parseInt(parts[i].trim());
-                } catch (NumberFormatException ignored) {
-                }
-            }
+            int[] g = EqEngine.parseGains(cp[1]);
             addPresetRow("c:" + cp[0], cp[0], "직접 만든 설정", g, cur);
         }
         TextView save = text("+ 현재 설정을 내 프리셋으로 저장", 15, Theme.TEXT, false);
@@ -524,8 +517,8 @@ public class MainActivity extends Activity implements EqEngine.Listener {
             paint.setColor(Theme.OUTLINE);
             canvas.drawLine(0, h / 2, w, h / 2, paint);
             path.reset();
-            for (int i = 0; i < 10; i++) {
-                float x = i / 9f * w;
+            for (int i = 0; i < g.length; i++) {
+                float x = i / (float) (g.length - 1) * w;
                 float y = h / 2 - g[i] / 12f * (h / 2 * 0.9f);
                 if (i == 0) path.moveTo(x, y);
                 else path.lineTo(x, y);

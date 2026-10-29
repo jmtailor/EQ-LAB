@@ -15,14 +15,17 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * 이퀄라이저 상태(10밴드 게인, 켜짐, 프리셋)와, 음악 앱이 공개한 오디오 세션마다 붙인
+ * 이퀄라이저 상태(11밴드 게인, 켜짐, 프리셋)와, 음악 앱이 공개한 오디오 세션마다 붙인
  * DynamicsProcessing 효과를 관리한다. 서비스와 화면이 같은 프로세스에서 공유한다.
  */
 final class EqEngine {
     private EqEngine() {}
 
-    static final int[] FREQ = {31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
-    static final String[] LABEL = {"31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"};
+    static final int[] FREQ = {20, 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
+    static final String[] LABEL = {"20", "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"};
+    static final int BANDS = FREQ.length;
+    /** 20Hz 대역을 넣기 전(10밴드)에 저장된 값의 개수. */
+    private static final int LEGACY_BANDS = 10;
 
     static final String[][] PRESET_META = {
             {"flat", "플랫", "원음 그대로"},
@@ -31,19 +34,20 @@ final class EqEngine {
             {"club", "클럽", "리듬과 고음을 강조"},
             {"acoustic", "어쿠스틱", "악기 질감을 살려서"}
     };
+    // 맨 앞 값이 20Hz. 기존 10밴드의 31Hz 대역이 그 아래까지 포함했으므로 같은 값으로 두어 소리를 유지한다.
     static final int[][] PRESET_GAINS = {
-            {0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-            {8, 7, 5, 3, 1, 0, -1, 0, 0, 1},
-            {-3, -2, -1, 1, 3, 4, 4, 2, 0, -1},
-            {6, 5, 3, 0, 1, 2, 3, 4, 3, 2},
-            {4, 4, 3, 2, 1, 1, 2, 3, 3, 3}
+            {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+            {8, 8, 7, 5, 3, 1, 0, -1, 0, 0, 1},
+            {-3, -3, -2, -1, 1, 3, 4, 4, 2, 0, -1},
+            {6, 6, 5, 3, 0, 1, 2, 3, 4, 3, 2},
+            {4, 4, 4, 3, 2, 1, 1, 2, 3, 3, 3}
     };
 
     interface Listener {
         void onChanged();
     }
 
-    private static final int[] gains = new int[10];
+    private static final int[] gains = new int[BANDS];
     private static boolean on = true;
     private static String presetId = "flat";
     private static boolean loaded = false;
@@ -89,19 +93,14 @@ final class EqEngine {
         presetId = p.getString("preset", "flat");
         String csv = p.getString("gains", "");
         if (!csv.isEmpty()) {
-            String[] parts = csv.split(",");
-            for (int i = 0; i < 10 && i < parts.length; i++) {
-                try {
-                    gains[i] = clamp(Integer.parseInt(parts[i].trim()));
-                } catch (NumberFormatException ignored) {
-                }
-            }
+            int[] saved = parseGains(csv);
+            for (int i = 0; i < BANDS; i++) gains[i] = clamp(saved[i]);
         }
     }
 
     private static void save(Context c) {
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < BANDS; i++) {
             if (i > 0) sb.append(',');
             sb.append(gains[i]);
         }
@@ -151,11 +150,11 @@ final class EqEngine {
         }
         if (src == null && id.startsWith("c:")) {
             for (String[] cp : customPresets(c)) {
-                if (("c:" + cp[0]).equals(id)) src = parse(cp[1]);
+                if (("c:" + cp[0]).equals(id)) src = parseGains(cp[1]);
             }
         }
         if (src == null) return;
-        for (int i = 0; i < 10; i++) gains[i] = clamp(src[i]);
+        for (int i = 0; i < BANDS; i++) gains[i] = clamp(src[i]);
         presetId = id;
         applyToAll();
         save(c);
@@ -179,19 +178,25 @@ final class EqEngine {
 
     // ------------------------------------------------------------ 사용자 프리셋
 
-    private static int[] parse(String csv) {
-        int[] out = new int[10];
+    /**
+     * 쉼표로 이어진 게인 문자열을 BANDS 길이 배열로 바꾼다.
+     * 10개짜리(20Hz 대역 추가 전에 저장된 값)는 맨 앞에 31Hz 값을 20Hz 자리로 복제해 11개로 만든다.
+     */
+    static int[] parseGains(String csv) {
         String[] parts = csv.split(",");
-        for (int i = 0; i < 10 && i < parts.length; i++) {
+        int shift = parts.length == LEGACY_BANDS ? 1 : 0;
+        int[] out = new int[BANDS];
+        for (int i = 0; i < parts.length && i + shift < BANDS; i++) {
             try {
-                out[i] = Integer.parseInt(parts[i].trim());
+                out[i + shift] = Integer.parseInt(parts[i].trim());
             } catch (NumberFormatException ignored) {
             }
         }
+        if (shift == 1) out[0] = out[1];
         return out;
     }
 
-    /** 각 항목은 {이름, "g0,g1,...,g9"}. */
+    /** 각 항목은 {이름, "g0,g1,...,g10"}. 예전 10개짜리 값도 읽을 때 변환한다. */
     static synchronized List<String[]> customPresets(Context c) {
         List<String[]> list = new ArrayList<>();
         String raw = prefs(c).getString("custom", "");
@@ -207,7 +212,7 @@ final class EqEngine {
         List<String[]> list = customPresets(c);
         String name = "내 프리셋 " + (list.size() + 1);
         StringBuilder csv = new StringBuilder();
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < BANDS; i++) {
             if (i > 0) csv.append(',');
             csv.append(gains[i]);
         }
@@ -228,7 +233,7 @@ final class EqEngine {
         try {
             DynamicsProcessing.Config cfg = new DynamicsProcessing.Config.Builder(
                     DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
-                    2, true, 10, false, 0, false, 0, false).build();
+                    2, true, BANDS, false, 0, false, 0, false).build();
             DynamicsProcessing dp = new DynamicsProcessing(100, session, cfg);
             configure(dp);
             log("효과 생성 세션=" + session + " 제어권=" + dp.hasControl() + " 활성=" + dp.getEnabled() + " 켜짐=" + on);
@@ -259,8 +264,8 @@ final class EqEngine {
     }
 
     private static void configure(DynamicsProcessing dp) {
-        dp.setPreEqAllChannelsTo(new DynamicsProcessing.Eq(true, true, 10));
-        for (int i = 0; i < 10; i++) {
+        dp.setPreEqAllChannelsTo(new DynamicsProcessing.Eq(true, true, BANDS));
+        for (int i = 0; i < BANDS; i++) {
             float g = on ? gains[i] : 0f;
             dp.setPreEqBandAllChannelsTo(i, new DynamicsProcessing.EqBand(true, FREQ[i], g));
         }
