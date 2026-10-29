@@ -7,12 +7,25 @@ import android.media.audiofx.AudioEffect;
 
 /** 음악 앱이 오디오 세션을 열고 닫을 때 보내는 방송을 받아 기록한다 (실험 A). */
 public class SessionReceiver extends BroadcastReceiver {
+    // 방송을 받는 경로가 두 개(매니페스트, 화면이 열려 있을 때 등록한 것)라 같은 방송이 두 번 올 수 있다.
+    private static String lastKey = "";
+    private static long lastTime = 0;
+
+    private static synchronized boolean isDuplicate(String key) {
+        long now = System.currentTimeMillis();
+        boolean dup = key.equals(lastKey) && now - lastTime < 1000;
+        lastKey = key;
+        lastTime = now;
+        return dup;
+    }
+
     @Override
     public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
         if (action == null) return;
         int session = intent.getIntExtra(AudioEffect.EXTRA_AUDIO_SESSION, -1);
         String pkg = intent.getStringExtra(AudioEffect.EXTRA_PACKAGE_NAME);
+        if (isDuplicate(action + "|" + session + "|" + pkg)) return;
         int type = intent.getIntExtra(AudioEffect.EXTRA_CONTENT_TYPE, -1);
         if (AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION.equals(action)) {
             Store.addSession(context, session, pkg);

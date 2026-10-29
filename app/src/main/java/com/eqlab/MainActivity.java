@@ -136,11 +136,13 @@ public class MainActivity extends Activity {
         am.registerAudioPlaybackCallback(playbackCallback, handler);
         refreshInfo();
         handler.post(tick);
+        handler.post(spectrumTick);
     }
 
     @Override
     protected void onStop() {
         handler.removeCallbacks(tick);
+        handler.removeCallbacks(spectrumTick);
         try {
             unregisterReceiver(dynamicReceiver);
         } catch (Throwable ignored) {
@@ -155,6 +157,15 @@ public class MainActivity extends Activity {
         tone.stop();
         super.onDestroy();
     }
+
+    /** 스펙트럼 막대를 약 30fps로 다시 그린다. */
+    private final Runnable spectrumTick = new Runnable() {
+        @Override
+        public void run() {
+            if (currentTab == 3 && spectrum != null) spectrum.invalidate();
+            handler.postDelayed(this, 33);
+        }
+    };
 
     private final Runnable tick = new Runnable() {
         @Override
