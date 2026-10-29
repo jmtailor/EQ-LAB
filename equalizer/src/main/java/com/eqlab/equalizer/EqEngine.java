@@ -51,6 +51,18 @@ final class EqEngine {
     private static final Map<Integer, String> sessionPkg = new LinkedHashMap<>();
     private static final List<Listener> listeners = new CopyOnWriteArrayList<>();
 
+    private static final java.util.ArrayDeque<String> logLines = new java.util.ArrayDeque<>();
+
+    static synchronized void log(String m) {
+        logLines.addFirst(new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.KOREA).format(new java.util.Date()) + " " + m);
+        while (logLines.size() > 8) logLines.removeLast();
+    }
+
+    static synchronized String logText() {
+        if (logLines.isEmpty()) return "아직 기록이 없어요. 음악 앱에서 곡을 새로 재생해 보세요.";
+        return android.text.TextUtils.join("\n", logLines);
+    }
+
     static void addListener(Listener l) {
         listeners.add(l);
     }
@@ -210,23 +222,27 @@ final class EqEngine {
 
     /** 음악 앱이 오디오 세션을 열었을 때: 효과를 붙이고 현재 게인을 적용한다. */
     static synchronized void onSessionOpen(Context c, int session, String pkg) {
+        log("세션 열림 " + session + " / " + pkg);
         if (session <= 0) return;
         releaseSession(session);
         try {
             DynamicsProcessing.Config cfg = new DynamicsProcessing.Config.Builder(
                     DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
                     2, true, 10, false, 0, false, 0, false).build();
-            DynamicsProcessing dp = new DynamicsProcessing(0, session, cfg);
+            DynamicsProcessing dp = new DynamicsProcessing(100, session, cfg);
             configure(dp);
+            log("효과 생성 세션=" + session + " 제어권=" + dp.hasControl() + " 활성=" + dp.getEnabled() + " 켜짐=" + on);
             effects.put(session, dp);
             sessionPkg.put(session, label(c, pkg));
         } catch (Throwable t) {
+            log("효과 생성 실패: " + t);
             sessionPkg.remove(session);
         }
         fire();
     }
 
     static synchronized void onSessionClose(int session) {
+        log("세션 닫힘 " + session);
         releaseSession(session);
         fire();
     }
