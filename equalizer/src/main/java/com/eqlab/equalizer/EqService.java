@@ -33,6 +33,7 @@ public class EqService extends Service {
             if (action == null) return;
             int session = intent.getIntExtra(AudioEffect.EXTRA_AUDIO_SESSION, -1);
             String pkg = intent.getStringExtra(AudioEffect.EXTRA_PACKAGE_NAME);
+            if (SessionReceiver.isDuplicate(action + "|" + session + "|" + pkg)) return;
             if (AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION.equals(action)) {
                 EqEngine.onSessionOpen(context, session, pkg);
             } else if (AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION.equals(action)) {
