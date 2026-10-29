@@ -1,9 +1,9 @@
 # EQ-LAB 개발 가이드 (작업 재개용 단일 기준 문서)
 
-새 세션이나 다른 PC에서 작업을 이어갈 때 이 문서만 읽고 같은 방식으로 개발한다. 최종 갱신: 261030 / 기준 커밋 7d0b64d (build-6).
+새 세션이나 다른 PC에서 작업을 이어갈 때 이 문서만 읽고 같은 방식으로 개발한다. 최종 갱신: 261030 / 기준 커밋 3b5436f (build-7).
 
 ## 1. 프로젝트 요약
-- 갤럭시 S22 울트라(Android 16) 대상. 음악 앱(유튜브 뮤직 등) 재생음에 10밴드 EQ를 실시간 적용하고, 실시간 스펙트럼을 보며 조절하는 앱.
+- 갤럭시 S22 울트라(Android 16) 대상. 음악 앱(유튜브 뮤직 등) 재생음에 11밴드 EQ를 실시간 적용하고, 실시간 스펙트럼을 보며 조절하는 앱.
 - 저장소: https://github.com/jmtailor/EQ-LAB (로컬 클론 경로 예: /home/claude/eq-lab, 원격 origin, 브랜치 main)
 - 모듈: `app` = 시험용(com.eqlab, 동결, 수정하지 않음) / `equalizer` = 본 앱(com.eqlab.equalizer, 이후 모든 작업 대상)
 
@@ -30,9 +30,9 @@
 - 서비스 타입: EqService = specialUse, CaptureService = mediaProjection. 매니페스트 수정 시 권한과 foregroundServiceType을 함께 확인한다.
 
 ## 4. 구조
-- `EqEngine`: 게인 10개(-12~+12 dB), on, presetId, 프리셋(플랫·베이스·보컬·클럽·어쿠스틱 + 사용자), 세션별 DynamicsProcessing 관리, 진단 로그.
+- `EqEngine`: 게인 11개(20Hz~16kHz, -12~+12 dB, 개수는 `BANDS`), on, presetId, 프리셋(플랫·베이스·보컬·클럽·어쿠스틱 + 사용자), 세션별 DynamicsProcessing 관리, 진단 로그.
 - `SessionReceiver`(매니페스트) + `EqService`(동적 수신기): OPEN/CLOSE_AUDIO_EFFECT_CONTROL_SESSION 방송을 받아 `EqEngine.onSessionOpen/Close`. 중복 방송은 `isDuplicate`로 거른다.
-- 효과: `DynamicsProcessing(priority 100, session, Config(VARIANT_FAVOR_FREQUENCY_RESOLUTION, 2ch, preEq 10밴드))`, 대역 경계는 `FREQ` 배열.
+- 효과: `DynamicsProcessing(priority 100, session, Config(VARIANT_FAVOR_FREQUENCY_RESOLUTION, 2ch, preEq `BANDS`밴드))`, 대역 경계는 `FREQ` 배열.
 - 스펙트럼: `CaptureService`(AudioPlaybackCapture + MediaProjection, FFT 2048/hop 1024, 32막대) → `SpectrumState` → `SpectrumView`. 캡처는 EQ 적용 전 소리이므로 화면은 원음 + EQ 게인으로 합성한다.
 - UI: `MainActivity`(3탭: 이퀄라이저/프리셋/설정), `BandSliders`/`BandColumn`(알약형 슬라이더), `SpectrumView`(막대, 피크 홀드, 곡선, 드래그 점).
 
@@ -45,7 +45,7 @@
 ## 6. 확정 결정과 로드맵
 - 세로 고정 v1. 가로 화면, 플로팅 패널, 곡 제목 표시, 자동 프리셋은 실기기 검증 이후 확장 버전에서.
 - 승인된 다음 작업(순서대로):
-  1. 20Hz 대역 추가(11밴드). 31Hz 대역이 이미 그 아래를 포함하는지는 문서상 추정이며 미확인.
+  1. (구현됨, build-7, 실기기 확인 전) 20Hz 대역 추가(11밴드). 예전 31Hz 대역이 그 아래까지 포함했다는 것은 문서상 추정이며 미확인. 저장된 10개 값은 `EqEngine.parseGains`가 읽을 때 31Hz 값을 20Hz 자리로 복제해 11개로 변환한다(기존 소리 유지). 기본 프리셋도 20Hz 값 = 31Hz 값. 스펙트럼 막대는 여전히 31Hz~16kHz만 분석하고 31Hz 위치부터 그린다(20Hz 지점은 곡선과 점만).
   2. 게인 미세 조절: 0.5dB 이하 단위, 슬라이더 길게 누르면 미세 모드. 저장 형식은 정수에서 소수로 변경 필요(SharedPreferences 호환 처리).
   3. 주파수 점 추가: 스펙트럼 곡선 위 원하는 주파수에 점 추가, 추가 점 앞뒤는 근사치로 연결(대역 경계로 변환), 추가 대역은 총 최대 24개로 앱에서 제한.
 - 제약: DynamicsProcessing 대역은 경계 주파수와 게인만 있고 Q(폭)가 없다. 대역이 늘면 CPU 부담이 늘므로 배터리와 지연을 실기기에서 확인한다.
@@ -54,4 +54,4 @@
 ## 7. 빌드·배포 요약
 - 워크플로: `.github/workflows/build.yml` (setup-java 17, gradle 8.9, AGP 8.7.3). push 시 `:app:assembleDebug :equalizer:assembleDebug` 실행 후 릴리스 `build-<run_number>` 에 `equalizer.apk`, `eq-lab-test.apk` 게시.
 - APK 주소 형식: `https://github.com/jmtailor/EQ-LAB/releases/download/build-N/equalizer.apk`
-- 최신 정상 빌드: build-6.
+- 최신 정상 빌드: build-7 (11밴드). 직전: build-6 (10밴드).
