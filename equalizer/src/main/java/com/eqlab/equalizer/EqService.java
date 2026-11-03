@@ -9,10 +9,18 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
+import android.media.AudioManager;
+import android.media.AudioPlaybackConfiguration;
 import android.media.audiofx.AudioEffect;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+
+import java.util.List;
 
 /**
  * 앱이 꺼져 있어도 음악 앱이 여는 오디오 세션을 감지해서 EQ를 자동으로 붙여 주는 서비스.
@@ -33,14 +41,27 @@ public class EqService extends Service {
             if (action == null) return;
             int session = intent.getIntExtra(AudioEffect.EXTRA_AUDIO_SESSION, -1);
             String pkg = intent.getStringExtra(AudioEffect.EXTRA_PACKAGE_NAME);
-            if (SessionReceiver.isDuplicate(action + "|" + session + "|" + pkg)) return;
+            if (SessionReceiver.isDuplicate(action + "|" + session + "|" + pkg)) {
+                EqEngine.noteDuplicate();
+                return;
+            }
             if (AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION.equals(action)) {
+                EqEngine.noteOpen(pkg);
                 EqEngine.onSessionOpen(context, session, pkg);
             } else if (AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION.equals(action)) {
                 EqEngine.onSessionClose(session);
             }
         }
     };
+
+    /** 재생 중인 소리가 생기거나 없어질 때 기록한다(어느 앱인지는 공개 API로 알 수 없다). */
+    private final AudioManager.AudioPlaybackCallback playbackCallback = new AudioManager.AudioPlaybackCallback() {
+        @Override
+        public void onPlaybackConfigChanged(List<AudioPlaybackConfiguration> configs) {
+            EqEngine.notePlayback(configs);
+        }
+    };
+    private boolean playbackRegistered = false;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -60,6 +81,17 @@ public class EqService extends Service {
             registerReceiver(receiver, f);
         }
         running = true;
+        boolean notiOk = Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        EqEngine.log("서비스 시작 · 수신기 등록 · 알림 권한=" + (notiOk ? "허용" : "없음"));
+        try {
+            AudioManager am = getSystemService(AudioManager.class);
+            am.registerAudioPlaybackCallback(playbackCallback, new Handler(Looper.getMainLooper()));
+            playbackRegistered = true;
+            EqEngine.notePlayback(am.getActivePlaybackConfigurations());
+        } catch (Throwable t) {
+            EqEngine.log("재생 감지 등록 실패: " + t);
+        }
     }
 
     @Override
@@ -83,13 +115,27 @@ public class EqService extends Service {
                 .addAction(new Notification.Action.Builder(null, "중지", stopPi).build())
                 .setOngoing(true)
                 .build();
-        startForeground(2, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        try {
+            startForeground(2, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } catch (Throwable t) {
+            EqEngine.log("포그라운드 시작 실패: " + t);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
         running = false;
+        EqEngine.log("서비스 종료");
+        if (playbackRegistered) {
+            try {
+                getSystemService(AudioManager.class).unregisterAudioPlaybackCallback(playbackCallback);
+            } catch (Throwable ignored) {
+            }
+            playbackRegistered = false;
+        }
         try {
             unregisterReceiver(receiver);
         } catch (Throwable ignored) {

@@ -566,6 +566,11 @@ public class MainActivity extends Activity implements EqEngine.Listener {
         tips.setLineSpacing(0, 1.25f);
         tips.setPadding(dp(4), 0, dp(4), 0);
         settingsList.addView(tips, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 16));
+        settingsList.addView(text("앱별 연결 점검 (이번 실행 중 받은 방송)", 13, Theme.MUTED, false),
+                lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 16));
+        TextView support = text(EqEngine.supportText(this), 12, Theme.TEXT, false);
+        support.setLineSpacing(0, 1.2f);
+        settingsList.addView(support, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 6));
         settingsList.addView(text("진단 기록 (서비스 " + (EqService.isRunning() ? "동작" : "중지") + ")", 13, Theme.MUTED, false),
                 lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 16));
         settingsList.addView(text(EqEngine.logText(), 12, Theme.TEXT, false),

@@ -3,6 +3,8 @@ package com.eqlab.equalizer;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
+import android.media.AudioPlaybackConfiguration;
 import android.media.audiofx.DynamicsProcessing;
 
 import java.util.ArrayList;
@@ -58,8 +60,95 @@ final class EqEngine {
     private static final java.util.ArrayDeque<String> logLines = new java.util.ArrayDeque<>();
 
     static synchronized void log(String m) {
-        logLines.addFirst(new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.KOREA).format(new java.util.Date()) + " " + m);
-        while (logLines.size() > 8) logLines.removeLast();
+        logLines.addFirst(clock(System.currentTimeMillis()) + " " + m);
+        while (logLines.size() > 24) logLines.removeLast();
+    }
+
+    private static String clock(long millis) {
+        return new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.KOREA).format(new java.util.Date(millis));
+    }
+
+    // ------------------------------------------------------------ 연결 점검(진단)
+
+    /** 점검 대상 음악 앱 {패키지, 표시 이름}. 매니페스트 queries 와 같은 목록을 유지한다. */
+    static final String[][] KNOWN_APPS = {
+            {"com.google.android.apps.youtube.music", "유튜브 뮤직"},
+            {"com.iloen.melon", "멜론"},
+            {"com.spotify.music", "스포티파이"},
+            {"com.sec.android.app.music", "삼성 뮤직"}
+    };
+
+    /** 패키지 -> {열림 방송 횟수, 마지막 수신 시각}. 앱 프로세스가 살아 있는 동안만 유지된다. */
+    private static final Map<String, long[]> seen = new LinkedHashMap<>();
+    private static int duplicateCount = 0;
+    private static String lastPlayback = "";
+
+    /** 이미 처리한 것과 같은 방송(수신기와 서비스가 둘 다 받음)을 무시했을 때. */
+    static synchronized void noteDuplicate() {
+        duplicateCount++;
+    }
+
+    /** 앱이 세션 열림 방송을 보냈을 때(중복 제외). */
+    static synchronized void noteOpen(String pkg) {
+        String key = pkg == null ? "(앱 이름 없음)" : pkg;
+        long[] v = seen.get(key);
+        if (v == null) {
+            v = new long[2];
+            seen.put(key, v);
+        }
+        v[0]++;
+        v[1] = System.currentTimeMillis();
+    }
+
+    /** 재생 중인 소리가 있는데 연결된 세션이 없는지 알려 주는 기록. 패키지는 공개 API로 알 수 없다. */
+    static synchronized void notePlayback(List<AudioPlaybackConfiguration> configs) {
+        int media = 0;
+        int other = 0;
+        if (configs != null) {
+            for (AudioPlaybackConfiguration cfg : configs) {
+                try {
+                    AudioAttributes a = cfg.getAudioAttributes();
+                    if (a.getUsage() == AudioAttributes.USAGE_MEDIA) media++;
+                    else other++;
+                } catch (Throwable t) {
+                    other++;
+                }
+            }
+        }
+        String key = "재생 감지 미디어 " + media + "개, 기타 " + other + "개";
+        if (key.equals(lastPlayback)) return;
+        lastPlayback = key;
+        String note = media > 0 && effects.isEmpty() ? " · 연결된 세션 없음" : " · 연결된 세션 " + effects.size() + "개";
+        log(key + note);
+    }
+
+    /** 설정 탭에 보여 줄 앱별 점검 문구. 방송을 받은 적이 없으면 그렇게 표시한다. */
+    static synchronized String supportText(Context c) {
+        StringBuilder sb = new StringBuilder();
+        PackageManager pm = c.getPackageManager();
+        for (String[] app : KNOWN_APPS) {
+            boolean installed;
+            try {
+                pm.getPackageInfo(app[0], 0);
+                installed = true;
+            } catch (Throwable t) {
+                installed = false;
+            }
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(app[1]).append(" · ").append(installed ? "설치됨" : "설치 안 됨").append(" · ");
+            long[] v = seen.get(app[0]);
+            if (v == null) sb.append("방송 받은 적 없음");
+            else sb.append("방송 ").append(v[0]).append("회 (마지막 ").append(clock(v[1])).append(")");
+        }
+        for (Map.Entry<String, long[]> e : seen.entrySet()) {
+            boolean known = false;
+            for (String[] app : KNOWN_APPS) known |= app[0].equals(e.getKey());
+            if (known) continue;
+            sb.append('\n').append(e.getKey()).append(" · 방송 ").append(e.getValue()[0])
+                    .append("회 (마지막 ").append(clock(e.getValue()[1])).append(")");
+        }
+        if (duplicateCount > 0) sb.append("\n중복 방송 무시 ").append(duplicateCount).append("회");
+        return sb.toString();
     }
 
     static synchronized String logText() {

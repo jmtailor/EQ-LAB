@@ -24,9 +24,13 @@ public class SessionReceiver extends BroadcastReceiver {
         if (action == null) return;
         int session = intent.getIntExtra(AudioEffect.EXTRA_AUDIO_SESSION, -1);
         String pkg = intent.getStringExtra(AudioEffect.EXTRA_PACKAGE_NAME);
-        if (isDuplicate(action + "|" + session + "|" + pkg)) return;
+        if (isDuplicate(action + "|" + session + "|" + pkg)) {
+            EqEngine.noteDuplicate();
+            return;
+        }
         EqEngine.load(context);
         if (AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION.equals(action)) {
+            EqEngine.noteOpen(pkg);
             EqEngine.onSessionOpen(context, session, pkg);
         } else if (AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION.equals(action)) {
             EqEngine.onSessionClose(session);
