@@ -84,6 +84,7 @@ public class EqService extends Service {
         boolean notiOk = Build.VERSION.SDK_INT < 33
                 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
         EqEngine.log("서비스 시작 · 수신기 등록 · 알림 권한=" + (notiOk ? "허용" : "없음"));
+        EqEngine.ensureGlobal();
         try {
             AudioManager am = getSystemService(AudioManager.class);
             am.registerAudioPlaybackCallback(playbackCallback, new Handler(Looper.getMainLooper()));
@@ -129,6 +130,7 @@ public class EqService extends Service {
     public void onDestroy() {
         running = false;
         EqEngine.log("서비스 종료");
+        EqEngine.releaseGlobal();
         if (playbackRegistered) {
             try {
                 getSystemService(AudioManager.class).unregisterAudioPlaybackCallback(playbackCallback);

@@ -54,6 +54,8 @@ final class EqEngine {
     private static String presetId = "flat";
     private static boolean loaded = false;
     private static final Map<Integer, DynamicsProcessing> effects = new HashMap<>();
+    /** 전역(오디오 세션 0번) 효과. 있으면 세션별 효과는 붙이지 않는다(이중 적용 방지). 없으면 세션 방식으로 동작한다. */
+    private static DynamicsProcessing globalFx = null;
     private static final Map<Integer, String> sessionPkg = new LinkedHashMap<>();
     private static final List<Listener> listeners = new CopyOnWriteArrayList<>();
 
@@ -118,7 +120,10 @@ final class EqEngine {
         String key = "재생 감지 미디어 " + media + "개, 기타 " + other + "개";
         if (key.equals(lastPlayback)) return;
         lastPlayback = key;
-        String note = media > 0 && effects.isEmpty() ? " · 연결된 세션 없음" : " · 연결된 세션 " + effects.size() + "개";
+        String note;
+        if (globalFx != null) note = " · 전역 효과 적용 중";
+        else if (media > 0 && effects.isEmpty()) note = " · 연결된 세션 없음";
+        else note = " · 연결된 세션 " + effects.size() + "개";
         log(key + note);
     }
 
@@ -212,6 +217,10 @@ final class EqEngine {
 
     static synchronized String presetId() {
         return presetId;
+    }
+
+    static synchronized boolean isGlobal() {
+        return globalFx != null;
     }
 
     static synchronized int sessionCount() {
@@ -314,10 +323,57 @@ final class EqEngine {
 
     // ------------------------------------------------------------ 오디오 세션과 효과
 
-    /** 음악 앱이 오디오 세션을 열었을 때: 효과를 붙이고 현재 게인을 적용한다. */
+    /**
+     * 전역 효과(세션 0번)를 만든다. 방송을 보내지 않는 앱(멜론 등)도 적용되게 하려는 것이다.
+     * 성공하면 이미 붙은 세션별 효과를 모두 풀어 이중 적용을 막고, 실패하면 세션 방식으로 계속 동작한다.
+     */
+    static synchronized boolean ensureGlobal() {
+        if (globalFx != null) return true;
+        try {
+            DynamicsProcessing.Config cfg = new DynamicsProcessing.Config.Builder(
+                    DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+                    2, true, BANDS, false, 0, false, 0, false).build();
+            DynamicsProcessing dp = new DynamicsProcessing(0, 0, cfg);
+            configure(dp);
+            globalFx = dp;
+            for (Integer s : new ArrayList<>(effects.keySet())) {
+                DynamicsProcessing old = effects.remove(s);
+                try {
+                    old.release();
+                } catch (Throwable ignored) {
+                }
+            }
+            log("전역 효과 생성 제어권=" + dp.hasControl() + " 활성=" + dp.getEnabled() + " 켜짐=" + on);
+            fire();
+            return true;
+        } catch (Throwable t) {
+            globalFx = null;
+            log("전역 효과 실패, 세션 방식 사용: " + t);
+            return false;
+        }
+    }
+
+    static synchronized void releaseGlobal() {
+        if (globalFx == null) return;
+        try {
+            globalFx.release();
+        } catch (Throwable ignored) {
+        }
+        globalFx = null;
+        log("전역 효과 해제");
+        fire();
+    }
+
+    /** 음악 앱이 오디오 세션을 열었을 때: 효과를 붙이고 현재 게인을 적용한다(전역 모드에서는 목록만 기록). */
     static synchronized void onSessionOpen(Context c, int session, String pkg) {
         log("세션 열림 " + session + " / " + pkg);
         if (session <= 0) return;
+        if (globalFx != null) {
+            sessionPkg.put(session, label(c, pkg));
+            log("전역 모드 · 세션별 효과는 붙이지 않음");
+            fire();
+            return;
+        }
         releaseSession(session);
         try {
             DynamicsProcessing.Config cfg = new DynamicsProcessing.Config.Builder(
@@ -362,6 +418,18 @@ final class EqEngine {
     }
 
     private static void applyToAll() {
+        if (globalFx != null) {
+            try {
+                configure(globalFx);
+            } catch (Throwable t) {
+                log("전역 효과 갱신 실패: " + t);
+                try {
+                    globalFx.release();
+                } catch (Throwable ignored) {
+                }
+                globalFx = null;
+            }
+        }
         Iterator<Map.Entry<Integer, DynamicsProcessing>> it = effects.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<Integer, DynamicsProcessing> e = it.next();

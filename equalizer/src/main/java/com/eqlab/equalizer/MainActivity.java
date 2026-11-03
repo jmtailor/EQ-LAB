@@ -353,7 +353,11 @@ public class MainActivity extends Activity implements EqEngine.Listener {
         if (nowApp == null) return;
         List<String> apps = EqEngine.activePackages();
         boolean on = EqEngine.isOn();
-        if (apps.isEmpty()) {
+        boolean global = EqEngine.isGlobal();
+        if (global) {
+            nowApp.setText("모든 앱의 소리에 적용");
+            nowApp.setTextColor(Theme.TEXT);
+        } else if (apps.isEmpty()) {
             nowApp.setText("음악 앱에서 곡을 재생하세요");
             nowApp.setTextColor(Theme.MUTED);
         } else {
@@ -363,7 +367,7 @@ public class MainActivity extends Activity implements EqEngine.Listener {
         if (!on) {
             nowStatus.setText("꺼짐");
             nowStatus.setTextColor(Theme.MUTED);
-        } else if (apps.isEmpty()) {
+        } else if (apps.isEmpty() && !global) {
             nowStatus.setText("재생 대기 중");
             nowStatus.setTextColor(Theme.MUTED);
         } else {
