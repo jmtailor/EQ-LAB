@@ -27,6 +27,8 @@ final class BandColumn extends View {
     private int gain = 0;
     private boolean eqOn = true;
     private boolean active = false;
+    private String freqText = "";
+    private boolean extra = false;
 
     private float downX;
     private float downY;
@@ -38,13 +40,15 @@ final class BandColumn extends View {
         this.callback = cb;
         this.slop = ViewConfiguration.get(c).getScaledTouchSlop();
         textPaint.setTextAlign(Paint.Align.CENTER);
-        setContentDescription(EqEngine.LABEL[band] + " 헤르츠 대역");
     }
 
-    void set(int gainDb, boolean on, boolean isActive) {
+    void set(int gainDb, boolean on, boolean isActive, String freqLabel, boolean isExtra) {
+        if (!freqLabel.equals(freqText)) setContentDescription(freqLabel + " 헤르츠 대역");
         gain = gainDb;
         eqOn = on;
         active = isActive;
+        freqText = freqLabel;
+        extra = isExtra;
         invalidate();
     }
 
@@ -110,8 +114,8 @@ final class BandColumn extends View {
 
         // 아래 주파수
         textPaint.setTextSize(dp(12));
-        textPaint.setColor(Theme.MUTED);
-        canvas.drawText(EqEngine.LABEL[band], cx, tt + th + dp(20), textPaint);
+        textPaint.setColor(extra ? Theme.ACCENT : Theme.MUTED);
+        canvas.drawText(freqText, cx, tt + th + dp(20), textPaint);
     }
 
     private int gainFromY(float y) {

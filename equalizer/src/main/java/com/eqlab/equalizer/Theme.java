@@ -21,6 +21,30 @@ final class Theme {
     static final int SELECTED = 0xFF12302B;
     static final int OUTLINE = 0xFF2B4143;
 
+    /** 스펙트럼 팔레트: 저음에서 고음으로 갈수록 민트 → 하늘 → 파랑 → 보라 → 분홍 → 주황. */
+    static final int[] SPECTRUM = {0xFF2DE2B6, 0xFF35C8F0, 0xFF5B8CFF, 0xFFA066FF, 0xFFFF5FC2, 0xFFFFB04A};
+
+    /** 두 색을 f(0~1) 비율로 섞는다. */
+    static int mix(int a, int b, float f) {
+        int ar = (a >> 16) & 255;
+        int ag = (a >> 8) & 255;
+        int ab = a & 255;
+        int br = (b >> 16) & 255;
+        int bg = (b >> 8) & 255;
+        int bb = b & 255;
+        int r = Math.round(ar + (br - ar) * f);
+        int g = Math.round(ag + (bg - ag) * f);
+        int bl = Math.round(ab + (bb - ab) * f);
+        return 0xFF000000 | (r << 16) | (g << 8) | bl;
+    }
+
+    /** 팔레트에서 t(0~1) 위치의 색. */
+    static int spectrumAt(float t) {
+        float p = Math.max(0f, Math.min(1f, t)) * (SPECTRUM.length - 1);
+        int i = Math.min(SPECTRUM.length - 2, (int) p);
+        return mix(SPECTRUM[i], SPECTRUM[i + 1], p - i);
+    }
+
     static int dp(Context c, float v) {
         return Math.round(v * c.getResources().getDisplayMetrics().density);
     }

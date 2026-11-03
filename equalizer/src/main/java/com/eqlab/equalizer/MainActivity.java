@@ -52,6 +52,10 @@ public class MainActivity extends Activity implements EqEngine.Listener {
     private TextView btnSpec;
     private LinearLayout chipRow;
     private BandSliders sliders;
+    private TextView headSub;
+    private boolean refreshPosted = false;
+    private String chipKey = "";
+    private String pillKey = "";
 
     // 프리셋·설정 화면
     private LinearLayout presetList;
@@ -82,12 +86,23 @@ public class MainActivity extends Activity implements EqEngine.Listener {
     protected void onStop() {
         EqEngine.removeListener(this);
         handler.removeCallbacks(tick);
+        EqEngine.flush(this);
         super.onStop();
     }
 
     @Override
     public void onChanged() {
-        runOnUiThread(this::refreshAll);
+        // 슬라이더를 빠르게 끌 때 갱신 요청이 쌓이지 않게 하나로 합친다.
+        synchronized (this) {
+            if (refreshPosted) return;
+            refreshPosted = true;
+        }
+        runOnUiThread(() -> {
+            synchronized (this) {
+                refreshPosted = false;
+            }
+            refreshAll();
+        });
     }
 
     private final Runnable tick = new Runnable() {
@@ -254,7 +269,45 @@ public class MainActivity extends Activity implements EqEngine.Listener {
         // 스펙트럼
         spectrum = new SpectrumView(this);
         spectrum.setBackground(Theme.box(this, Theme.TRACK, Theme.BORDER, 16));
-        spectrum.setCallback((band, g) -> userGain(band, g));
+        spectrum.setCallback(new SpectrumView.Callback() {
+            @Override
+            public void onBand(int band, int gainDb) {
+                userGain(band, gainDb);
+            }
+
+            @Override
+            public void onMoveFreq(int band, int hz) {
+                activeBand = band;
+                EqEngine.moveExtra(MainActivity.this, band, hz);
+            }
+
+            @Override
+            public int onAdd(int hz) {
+                int idx = EqEngine.addPoint(MainActivity.this, hz);
+                if (idx >= 0) {
+                    Haptics.heavy();
+                    activeBand = idx;
+                    refreshAll();
+                    sliders.scrollToBand(idx);
+                } else if (idx == -1) {
+                    Toast.makeText(MainActivity.this, "점은 기본 대역을 포함해 최대 " + EqEngine.MAX_BANDS + "개까지 둘 수 있어요", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(MainActivity.this, "이미 있는 점과 너무 가까워요", Toast.LENGTH_SHORT).show();
+                }
+                return idx;
+            }
+
+            @Override
+            public void onRemove(int band) {
+                if (EqEngine.removePoint(MainActivity.this, band)) {
+                    Haptics.heavy();
+                    activeBand = Math.max(0, band - 1);
+                    refreshAll();
+                } else {
+                    Toast.makeText(MainActivity.this, "기본 대역은 지울 수 없어요. 추가한 점만 지울 수 있어요", Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
         col.addView(spectrum, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(170), 10));
 
         // 원음 / 적용 후 / 스펙트럼 켜기
@@ -300,7 +353,8 @@ public class MainActivity extends Activity implements EqEngine.Listener {
         headText.setOrientation(LinearLayout.VERTICAL);
         headText.setPadding(dp(8), 0, 0, 0);
         headText.addView(text("대역별 조절", 14, Theme.TEXT, true));
-        headText.addView(text("좌우로 밀어 " + EqEngine.BANDS + "개 대역 조절", 12, Theme.MUTED, false));
+        headSub = text("", 12, Theme.MUTED, false);
+        headText.addView(headSub);
         head.addView(headText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView reset = text("초기화", 14, Theme.MUTED, false);
         reset.setGravity(Gravity.CENTER);
@@ -318,8 +372,9 @@ public class MainActivity extends Activity implements EqEngine.Listener {
 
     /** 슬라이더나 스펙트럼 점을 사용자가 끌었을 때. */
     private void userGain(int band, int g) {
-        int[] cur = EqEngine.gains();
-        int old = cur[band];
+        EqEngine.Model cur = EqEngine.model();
+        if (band < 0 || band >= cur.n) return;
+        int old = cur.gain[band];
         activeBand = band;
         if (g != old) {
             boolean crossed = g == 0 || (old < 0 && g > 0) || (old > 0 && g < 0);
@@ -332,18 +387,31 @@ public class MainActivity extends Activity implements EqEngine.Listener {
     }
 
     private void refreshAll() {
-        int[] gains = EqEngine.gains();
+        EqEngine.Model model = EqEngine.model();
         boolean on = EqEngine.isOn();
-        updating = true;
-        power.setChecked(on);
-        updating = false;
-        spectrum.setModel(gains, on, activeBand);
+        activeBand = Math.max(0, Math.min(model.n - 1, activeBand));
+        if (power.isChecked() != on) {
+            updating = true;
+            power.setChecked(on);
+            updating = false;
+        }
+        spectrum.setModel(model, on, activeBand);
         spectrum.setShow(showOrig, showPost);
-        sliders.set(gains, on, activeBand);
-        stylePill(btnOrig, "원음", showOrig, Theme.OUTLINE);
-        stylePill(btnPost, "적용 후", showPost, Theme.ACCENT);
-        stylePill(btnSpec, SpectrumState.running ? "스펙트럼 끄기" : "스펙트럼 켜기", SpectrumState.running, Theme.ACCENT);
-        rebuildChips();
+        sliders.set(model, on, activeBand);
+        headSub.setText("좌우로 밀어 " + model.n + "개 대역 조절");
+        // 칩과 버튼 모양은 상태가 바뀔 때만 다시 만든다(슬라이더를 끄는 동안 매번 만들면 화면이 끊긴다).
+        String key = showOrig + "|" + showPost + "|" + SpectrumState.running;
+        if (!key.equals(pillKey)) {
+            pillKey = key;
+            stylePill(btnOrig, "원음", showOrig, Theme.OUTLINE);
+            stylePill(btnPost, "적용 후", showPost, Theme.ACCENT);
+            stylePill(btnSpec, SpectrumState.running ? "스펙트럼 끄기" : "스펙트럼 켜기", SpectrumState.running, Theme.ACCENT);
+        }
+        String chips = EqEngine.presetId() + "|" + EqEngine.customKey(this);
+        if (!chips.equals(chipKey)) {
+            chipKey = chips;
+            rebuildChips();
+        }
         refreshNowPlaying();
         if (tab == 1) buildPresets();
         if (tab == 2) buildSettings();

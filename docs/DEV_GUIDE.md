@@ -1,6 +1,6 @@
 # EQ-LAB 개발 가이드 (작업 재개용 단일 기준 문서)
 
-새 세션이나 다른 PC에서 작업을 이어갈 때 이 문서만 읽고 같은 방식으로 개발한다. 최종 갱신: 261103 / 기준 커밋은 `git log` 확인 (최신 빌드 build-8, 진단 강화).
+새 세션이나 다른 PC에서 작업을 이어갈 때 이 문서만 읽고 같은 방식으로 개발한다. 최종 갱신: 261103 / 기준 커밋은 `git log` 확인 (최신 빌드 build-10, 슬라이더 개선·주파수 점 추가·스펙트럼 색).
 
 ## 1. 프로젝트 요약
 - 갤럭시 S22 울트라(Android 16) 대상. 음악 앱(유튜브 뮤직 등) 재생음에 11밴드 EQ를 실시간 적용하고, 실시간 스펙트럼을 보며 조절하는 앱.
@@ -30,13 +30,15 @@
 - 서비스 타입: EqService = specialUse, CaptureService = mediaProjection. 매니페스트 수정 시 권한과 foregroundServiceType을 함께 확인한다.
 
 ## 4. 구조
-- `EqEngine`: 게인 11개(20Hz~16kHz, -12~+12 dB, 개수는 `BANDS`), on, presetId, 프리셋(플랫·베이스·보컬·클럽·어쿠스틱 + 사용자), 세션별 DynamicsProcessing 관리, 진단 로그.
+- `EqEngine`: 기본 대역 11개(`FIXED_FREQ` 20Hz~16kHz, -12~+12 dB) + 사용자가 추가한 점(`extras` {주파수, 게인}, 합쳐서 최대 `MAX_BANDS`=24), on, presetId, 프리셋(플랫·베이스·보컬·클럽·어쿠스틱 + 사용자), DynamicsProcessing 관리, 진단 로그. 화면은 `EqEngine.model()`이 주는 `Model`(주파수 순으로 합친 복사본: freq/gain/extra, `at(hz)`는 로그 주파수 코사인 보간 곡선)만 읽는다. 대역 번호는 항상 이 합친 순서다.
+- 효과 적용·저장(build-10): 상태를 바꾸면 `scheduleApply`가 작업 스레드(`eq-apply`)에 예약하고 한꺼번에 처리한다(바뀐 대역만 `setPreEqBandAllChannelsTo`, 점 추가·삭제·프리셋·켜짐은 전체). 점 개수가 바뀌면 DynamicsProcessing은 Config의 밴드 수를 못 바꾸므로 효과를 새로 만들어 교체한다(`Fx.bands` 비교). 저장은 `saveSoon`(마지막 변경 0.3초 뒤), 화면이 멈출 때 `flush`. 효과를 만지는 IPC는 `EqEngine` 클래스 잠금 밖에서 한다(UI 스레드가 잠금 때문에 막히지 않게).
+- 저장 형식: SharedPreferences "eq"의 `gains`(기본 11개 CSV, 예전 10개짜리는 읽을 때 변환), `extras`("주파수:게인,..."), 사용자 프리셋 `custom`은 한 줄에 "이름\t게인11개" 또는 "이름\t게인11개|주파수:게인,...". 규칙에 안 맞는 점은 읽을 때 버린다(20~16000 안쪽, 이웃과 주파수 비 1.19 이상).
 - `SessionReceiver`(매니페스트) + `EqService`(동적 수신기): OPEN/CLOSE_AUDIO_EFFECT_CONTROL_SESSION 방송을 받아 `EqEngine.onSessionOpen/Close`. 중복 방송은 `isDuplicate`로 거른다.
 - 전역 모드(build-9): `EqService.onCreate`가 `EqEngine.ensureGlobal()`로 오디오 세션 0번에 DynamicsProcessing(priority 0, 시험용 앱 실험 B에서 검증한 값)을 건다. 성공하면 세션별 효과는 붙이지 않고(이미 붙은 것도 해제) 세션 방송은 목록 기록에만 쓴다. 실패하면 로그 "전역 효과 실패, 세션 방식 사용"을 남기고 기존 세션 방식으로 동작한다. 서비스 종료 시 `releaseGlobal()`. 모든 앱 소리(알림음 포함)에 EQ가 걸린다. 사용자가 "항상 전역으로 대체"를 선택함(261103). build-9 실기기 확인 완료(261103): 배너·진단 기록·멜론/유튜브 뮤직 적용·알림음 포함 전역 적용·EQ 끄기·서비스 중지 모두 정상.
 - 연결 점검(진단, build-8): `EqEngine.KNOWN_APPS`(유튜브 뮤직·멜론·스포티파이·삼성 뮤직)별로 설치 여부와 "세션 열림" 방송 수신 횟수·마지막 시각을 설정 탭 "앱별 연결 점검"에 보여 준다(앱 프로세스가 살아 있는 동안만 유지). `EqService`는 시작·종료·알림 권한·포그라운드 시작 실패를 기록하고, `AudioPlaybackCallback`으로 재생 중인 미디어 소리 개수와 연결된 세션 수를 기록한다(재생 앱의 패키지는 공개 API로 알 수 없다). 진단 기록은 최대 24줄.
 - 효과: `DynamicsProcessing(priority 100, session, Config(VARIANT_FAVOR_FREQUENCY_RESOLUTION, 2ch, preEq `BANDS`밴드))`, 대역 경계는 `FREQ` 배열.
 - 스펙트럼: `CaptureService`(AudioPlaybackCapture + MediaProjection, FFT 2048/hop 1024, 32막대) → `SpectrumState` → `SpectrumView`. 캡처는 EQ 적용 전 소리이므로 화면은 원음 + EQ 게인으로 합성한다.
-- UI: `MainActivity`(3탭: 이퀄라이저/프리셋/설정), `BandSliders`/`BandColumn`(알약형 슬라이더), `SpectrumView`(막대, 피크 홀드, 곡선, 드래그 점).
+- UI: `MainActivity`(3탭: 이퀄라이저/프리셋/설정, 갱신 요청은 하나로 합치고 칩·버튼은 상태가 바뀔 때만 다시 만든다), `BandSliders`/`BandColumn`(알약형 슬라이더, 점이 늘면 열도 늘어남), `SpectrumView`(가로는 로그 주파수 20Hz~16kHz, 막대는 주파수별 색 그라데이션, 곡선 글로우, 점). 점 조작: 점을 끌면 게인, 추가한 점은 좌우로 주파수도 이동, 빈 곳을 길게 누르면 그 주파수에 점 추가(처음 게인은 그 자리의 곡선 값), 추가한 점을 길게 누르면 삭제(기본 대역은 안내만). 색은 `Theme.SPECTRUM`/`mix`/`spectrumAt`. 프리셋을 고르면 추가한 점은 위치를 유지하고 게인만 프리셋 곡선에 맞추며(사용자 프리셋은 저장된 점으로 교체), 초기화는 점도 지운다.
 
 ## 5. 검증된 사실 / 알려진 이슈
 - 실기기(SM-S908N, Android 16, 유튜브 뮤직, 블루투스)에서 효과 청취, 스펙트럼, 10분 연속 재생, 화면 꺼짐, 트랙 변경 모두 정상. 유선 이어폰은 미검증(기기에 잭 없음).
@@ -47,18 +49,18 @@
 - 시험용 앱(EQ Lab)과 동시에 쓰면 같은 세션 효과가 겹칠 수 있다. 종료하거나 삭제.
 - 삼성 Dolby Atmos, Adapt Sound가 켜져 있으면 변화가 덜 들린다(설정 탭 안내에 있음).
 - 앱을 삭제 후 재설치(빌드마다 서명이 달라 업데이트 설치 불가)한 직후, 곡을 새로 재생하고 앱 초기화까지 해도 "연결된 앱 없음"이 계속될 수 있다(build-7 설치 때 실제 발생). 폰을 재시작하면 정상 연결됐다. 원인은 재설치 전 상태가 남아 있었을 것으로 추정하며 확인하지는 못했다. 코드 결함으로 보지 말고 재시작부터 안내한다.
-- 슬라이더를 올리고 내릴 때 약간 버퍼링처럼 끊기는 느낌이 있다(이전 빌드부터 있었음, 긴급 아님, 사용자 확인). 추정 원인(미확인): `EqEngine.setGain`이 터치 이동마다 모든 세션의 전 밴드를 다시 설정하고 저장과 UI 갱신을 동기로 처리한다. 개선은 사용자 지시가 있을 때만 한다.
+- 슬라이더를 올리고 내릴 때 약간 버퍼링처럼 끊기는 느낌이 있다(이전 빌드부터 있었음, 긴급 아님, 사용자 확인). 추정 원인(미확인): `EqEngine.setGain`이 터치 이동마다 모든 세션의 전 밴드를 다시 설정하고 저장과 UI 갱신을 동기로 처리한다. build-10에서 개선함(효과 적용·저장을 작업 스레드로 옮기고 화면 갱신을 줄임, 실기기 확인 전).
 
 ## 6. 확정 결정과 로드맵
 - 세로 고정 v1. 가로 화면, 플로팅 패널, 곡 제목 표시, 자동 프리셋은 실기기 검증 이후 확장 버전에서.
 - 승인된 다음 작업(순서대로):
   1. (구현됨, build-7, 실기기 확인 전) 20Hz 대역 추가(11밴드). 예전 31Hz 대역이 그 아래까지 포함했다는 것은 문서상 추정이며 미확인. 저장된 10개 값은 `EqEngine.parseGains`가 읽을 때 31Hz 값을 20Hz 자리로 복제해 11개로 변환한다(기존 소리 유지). 기본 프리셋도 20Hz 값 = 31Hz 값. 스펙트럼 막대는 여전히 31Hz~16kHz만 분석하고 31Hz 위치부터 그린다(20Hz 지점은 곡선과 점만).
   2. 게인 미세 조절: 0.5dB 이하 단위, 슬라이더 길게 누르면 미세 모드. 저장 형식은 정수에서 소수로 변경 필요(SharedPreferences 호환 처리).
-  3. 주파수 점 추가: 스펙트럼 곡선 위 원하는 주파수에 점 추가, 추가 점 앞뒤는 근사치로 연결(대역 경계로 변환), 추가 대역은 총 최대 24개로 앱에서 제한.
+  3. (구현됨, build-10, 실기기 확인 전) 주파수 점 추가: 위 UI 설명 참고. DynamicsProcessing 대역은 경계(cutoff)=점의 주파수와 게인뿐이라 화면 곡선(코사인 보간)과 실제 소리(대역별 계단 + 기기 내부 보간)는 근사치로만 같다. 게인 미세 조절(2번)은 사용자가 이번엔 고르지 않아 보류.
 - 제약: DynamicsProcessing 대역은 경계 주파수와 게인만 있고 Q(폭)가 없다. 대역이 늘면 CPU 부담이 늘므로 배터리와 지연을 실기기에서 확인한다.
 - 새 기능마다 빌드를 새로 만들고, 사용자에게 확인 항목을 번호로 준다.
 
 ## 7. 빌드·배포 요약
 - 워크플로: `.github/workflows/build.yml` (setup-java 17, gradle 8.9, AGP 8.7.3). push 시 `:app:assembleDebug :equalizer:assembleDebug` 실행 후 릴리스 `build-<run_number>` 에 `equalizer.apk`, `eq-lab-test.apk` 게시.
 - APK 주소 형식: `https://github.com/jmtailor/EQ-LAB/releases/download/build-N/equalizer.apk`
-- 최신 정상 빌드: build-9 (11밴드 + 연결 진단 + 전역 모드, 실기기 확인됨). 이전: build-8 진단, build-7 11밴드, build-6 10밴드.
+- 최신 빌드: build-10 (슬라이더 개선 + 주파수 점 추가 + 스펙트럼 색, 실기기 확인 전). 마지막으로 실기기 확인된 빌드: build-9 (11밴드 + 연결 진단 + 전역 모드). 이전: build-8 진단, build-7 11밴드, build-6 10밴드.
