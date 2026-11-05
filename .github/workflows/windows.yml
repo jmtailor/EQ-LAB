@@ -1,0 +1,53 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish (self-contained single exe)
+        shell: pwsh
+        run: |
+          dotnet publish windows/EqLabWin/EqLabWin.csproj -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
+            -o out *> build.log
+          $code = $LASTEXITCODE
+          Get-Content build.log -Tail 60
+          exit $code
+
+      - name: Publish release with exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "win-${{ github.run_number }}" out/EqLabWin.exe `
+            --title "Windows build ${{ github.run_number }}" `
+            --notes "EqLabWin.exe = Windows equalizer (needs Equalizer APO). Built from ${{ github.sha }}"
+
+      - name: Publish build log on failure
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if (Test-Path build.log) {
+            gh release create "winlog-${{ github.run_number }}" build.log `
+              --title "Windows build log ${{ github.run_number }} (failed)" `
+              --notes "Compile log of a failed Windows build. Built from ${{ github.sha }}" --prerelease
+          }

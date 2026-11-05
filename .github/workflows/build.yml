@@ -3,6 +3,12 @@ name: Build APK
 on:
   push:
     branches: [main]
+    # 윈도우 앱이나 문서만 바뀐 푸시는 안드로이드 빌드 번호(build-N)를 소모하지 않는다.
+    paths-ignore:
+      - 'windows/**'
+      - 'docs/**'
+      - '.github/workflows/windows.yml'
+      - '*.md'
   workflow_dispatch:
 
 permissions:
