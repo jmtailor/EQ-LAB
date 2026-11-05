@@ -46,6 +46,7 @@ namespace EqLabWin
         public static readonly SolidColorBrush GridBrush = B(0x261F2F30);
         public static readonly SolidColorBrush GridStrongBrush = B(0xFF1F2F30);
         public static readonly SolidColorBrush GlowBrush = B(0x405FE3C8);
+        public static readonly SolidColorBrush BwBrush = B(0xAA5FE3C8);
 
         public static readonly Pen PenBorder = P(BorderBrush, 1);
         public static readonly Pen PenOutline = P(OutlineBrush, 1);
@@ -53,6 +54,8 @@ namespace EqLabWin
         public static readonly Pen PenCurve = P(AccentBrush, 2.5);
         public static readonly Pen PenGlow = P(GlowBrush, 9);
         public static readonly Pen PenPoint = P(BgBrush, 2);
+        public static readonly Pen PenExtra = P(TextBrush, 2);
+        public static readonly Pen PenBw = P(BwBrush, 3);
 
         public static readonly FontFamily Family = new FontFamily("Segoe UI, Malgun Gothic");
         public static readonly Typeface Font =

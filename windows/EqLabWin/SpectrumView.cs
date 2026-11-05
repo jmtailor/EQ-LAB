@@ -9,8 +9,10 @@ using System.Windows.Threading;
 namespace EqLabWin
 {
     /// <summary>
-    /// 스펙트럼 막대(주파수별 색), 피크 홀드, EQ 곡선(글로우), 끌 수 있는 11개 점을 한 화면에 그린다.
+    /// 스펙트럼 막대(주파수별 색), 피크 홀드, EQ 곡선(글로우), 끌 수 있는 대역 점을 한 화면에 그린다.
     /// 가로축은 20Hz~16kHz 로그, 곡선의 세로축은 -12~+12dB.
+    /// 점 조작: 끌기(게인, 추가한 점은 주파수도), 더블클릭(점은 0dB로, 빈 곳은 점 추가), 우클릭(추가한 점 삭제),
+    /// 휠(게인), Ctrl+휠(Q).
     /// </summary>
     sealed class SpectrumView : FrameworkElement
     {
@@ -27,6 +29,12 @@ namespace EqLabWin
 
         int drag = -1;
         int hover = -1;
+
+        public static string FreqText(double hz)
+        {
+            if (hz >= 1000.0) return (hz / 1000.0).ToString("0.##", CultureInfo.InvariantCulture) + "k";
+            return hz.ToString("0", CultureInfo.InvariantCulture);
+        }
 
         public SpectrumView(SpectrumCapture capture)
         {
@@ -56,6 +64,13 @@ namespace EqLabWin
         double XOf(double hz)
         {
             return PadL + Math.Log(hz / 20.0) / Math.Log(800.0) * PlotW;
+        }
+
+        double HzOf(double x)
+        {
+            double t = (x - PadL) / PlotW;
+            t = Math.Max(0.0, Math.Min(1.0, t));
+            return 20.0 * Math.Pow(800.0, t);
         }
 
         double YOf(double gain)
@@ -109,7 +124,7 @@ namespace EqLabWin
             dc.DrawRoundedRectangle(Theme.SurfaceBrush, Theme.PenBorder, new Rect(0.5, 0.5, W - 1, H - 1), 12, 12);
 
             double bottom = PadT + PlotH;
-            double[] g = EqEngine.Snapshot();
+            Band[] bs = EqEngine.Snapshot();
             bool eqOn = EqEngine.On;
 
             // 격자: 주파수 세로선과 게인 가로선
@@ -136,7 +151,7 @@ namespace EqLabWin
             for (int b = 0; b < SpectrumCapture.Bars; b++)
             {
                 double f = SpectrumCapture.BarFreq[b];
-                double off = addCurve ? EqEngine.Interp(g, f) : 0.0;
+                double off = addCurve ? EqEngine.ResponseDb(bs, f) : 0.0;
                 double x1 = XOf(f / sqrtR), x2 = XOf(f * sqrtR);
                 double bw = (x2 - x1) * 0.72;
                 double bx = (x1 + x2) / 2.0 - bw / 2.0;
@@ -152,15 +167,15 @@ namespace EqLabWin
                 if (pf > 0.01) dc.DrawRectangle(peakBrush[b], null, new Rect(bx, bottom - pf * PlotH - 1.5, bw, 2.0));
             }
 
-            // EQ 곡선 (켜져 있을 때만 강조, 꺼지면 흐리게)
+            // EQ 곡선: 모든 대역 필터를 겹친 실제 응답 (꺼지면 흐리게)
             var geo = new StreamGeometry();
             using (StreamGeometryContext ctx = geo.Open())
             {
-                const int steps = 160;
+                const int steps = 200;
                 for (int i = 0; i <= steps; i++)
                 {
                     double hz = 20.0 * Math.Pow(800.0, i / (double)steps);
-                    var pt = new Point(XOf(hz), YOf(EqEngine.Interp(g, hz)));
+                    var pt = new Point(XOf(hz), YOf(EqEngine.ResponseDb(bs, hz)));
                     if (i == 0) ctx.BeginFigure(pt, false, false);
                     else ctx.LineTo(pt, true, true);
                 }
@@ -171,37 +186,54 @@ namespace EqLabWin
             dc.DrawGeometry(null, Theme.PenCurve, geo);
             dc.Pop();
 
-            // 점
-            for (int i = 0; i < EqEngine.N; i++)
+            // 점 (기본 대역은 어두운 테두리, 추가한 대역은 흰 테두리)
+            for (int i = 0; i < bs.Length; i++)
             {
-                var c = new Point(XOf(EqEngine.Freq[i]), YOf(g[i]));
+                var c = new Point(XOf(bs[i].Freq), YOf(bs[i].Gain));
                 bool active = drag == i || hover == i;
-                double r = active ? 9.0 : 6.5;
-                Brush fill = g[i] >= 0 ? Theme.AccentBrush : Theme.CutBrush;
-                dc.PushOpacity(eqOn ? 1.0 : 0.5);
-                dc.DrawEllipse(fill, Theme.PenPoint, c, r, r);
-                dc.Pop();
+
                 if (active)
                 {
-                    string gt = (g[i] > 0 ? "+" : "") + g[i].ToString("0.0", CultureInfo.InvariantCulture) + " dB · "
-                                + EqEngine.FreqLabel[i] + " Hz";
-                    double ty = c.Y - 30 < PadT ? c.Y + 14 : c.Y - 30;
-                    Text(dc, gt, Math.Max(PadL + 40, Math.Min(PadL + PlotW - 40, c.X)), ty, Theme.TextBrush, 12, true);
+                    // 폭 표시: -3dB 지점 기준 폭(옥타브)을 점 높이에 가로선으로 보여 준다.
+                    double bwOct = 2.0 / Math.Log(2.0) * Math.Asinh(1.0 / (2.0 * bs[i].Q));
+                    double xl = Math.Max(PadL, XOf(bs[i].Freq * Math.Pow(2.0, -bwOct / 2.0)));
+                    double xr = Math.Min(PadL + PlotW, XOf(bs[i].Freq * Math.Pow(2.0, bwOct / 2.0)));
+                    dc.DrawLine(Theme.PenBw, new Point(xl, c.Y), new Point(xr, c.Y));
+                    dc.DrawLine(Theme.PenBw, new Point(xl, c.Y - 5), new Point(xl, c.Y + 5));
+                    dc.DrawLine(Theme.PenBw, new Point(xr, c.Y - 5), new Point(xr, c.Y + 5));
+                }
+
+                double r = active ? 9.0 : 6.5;
+                Brush fill = bs[i].Gain >= 0 ? Theme.AccentBrush : Theme.CutBrush;
+                dc.PushOpacity(eqOn ? 1.0 : 0.5);
+                dc.DrawEllipse(fill, bs[i].Extra ? Theme.PenExtra : Theme.PenPoint, c, r, r);
+                dc.Pop();
+
+                if (active)
+                {
+                    string gt = (bs[i].Gain > 0 ? "+" : "") + bs[i].Gain.ToString("0.0", CultureInfo.InvariantCulture)
+                                + " dB · " + FreqText(bs[i].Freq) + " Hz · Q " + bs[i].Q.ToString("0.##", CultureInfo.InvariantCulture);
+                    double ty = c.Y - 32 < PadT ? c.Y + 14 : c.Y - 32;
+                    Text(dc, gt, Math.Max(PadL + 70, Math.Min(PadL + PlotW - 70, c.X)), ty, Theme.TextBrush, 12, true);
                 }
             }
+
+            // 안내 문구(점을 못 만들었을 때 등)
+            string notice = EqEngine.NoticeText;
+            if (notice != null && Environment.TickCount64 - EqEngine.NoticeTick < 2500)
+                Text(dc, notice, PadL + PlotW / 2.0, PadT + 6, Theme.WarnBrush, 13, true);
         }
 
         // ---------- 마우스 ----------
 
-        int HitPoint(Point p)
+        int HitPoint(Point p, Band[] bs)
         {
-            double[] g = EqEngine.Snapshot();
             int best = -1;
             double bestD = 18.0 * 18.0;
-            for (int i = 0; i < EqEngine.N; i++)
+            for (int i = 0; i < bs.Length; i++)
             {
-                double dx = XOf(EqEngine.Freq[i]) - p.X;
-                double dy = YOf(g[i]) - p.Y;
+                double dx = XOf(bs[i].Freq) - p.X;
+                double dy = YOf(bs[i].Gain) - p.Y;
                 double d = dx * dx + dy * dy;
                 if (d < bestD)
                 {
@@ -212,11 +244,36 @@ namespace EqLabWin
             return best;
         }
 
+        bool InPlot(Point p)
+        {
+            return p.X >= PadL && p.X <= PadL + PlotW && p.Y >= PadT && p.Y <= PadT + PlotH;
+        }
+
+        void UpdateDrag(Point p)
+        {
+            if (drag < 0) return;
+            if (EqEngine.IsExtra(drag)) EqEngine.SetFreq(drag, HzOf(p.X));
+            EqEngine.SetGain(drag, GainOf(p.Y));
+        }
+
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
         {
             Point p = e.GetPosition(this);
-            int i = HitPoint(p);
-            if (i < 0) return;
+            Band[] bs = EqEngine.Snapshot();
+            int i = HitPoint(p, bs);
+            if (i < 0)
+            {
+                // 빈 곳을 더블클릭하면 그 주파수에 대역을 추가한다.
+                if (e.ClickCount >= 2 && InPlot(p))
+                {
+                    string err = EqEngine.AddBand(HzOf(p.X));
+                    if (err != null) EqEngine.Notify(err);
+                    hover = -1;
+                    drag = -1;
+                    e.Handled = true;
+                }
+                return;
+            }
             if (e.ClickCount >= 2)
             {
                 EqEngine.SetGain(i, 0);
@@ -224,8 +281,9 @@ namespace EqLabWin
                 return;
             }
             drag = i;
+            hover = i;
             CaptureMouse();
-            EqEngine.SetGain(i, GainOf(p.Y));
+            UpdateDrag(p);
             InvalidateVisual();
             e.Handled = true;
         }
@@ -235,11 +293,11 @@ namespace EqLabWin
             Point p = e.GetPosition(this);
             if (drag >= 0)
             {
-                EqEngine.SetGain(drag, GainOf(p.Y));
+                UpdateDrag(p);
                 InvalidateVisual();
                 return;
             }
-            int h = HitPoint(p);
+            int h = HitPoint(p, EqEngine.Snapshot());
             if (h != hover)
             {
                 hover = h;
@@ -256,6 +314,36 @@ namespace EqLabWin
                 ReleaseMouseCapture();
                 InvalidateVisual();
             }
+        }
+
+        protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
+        {
+            Point p = e.GetPosition(this);
+            int i = HitPoint(p, EqEngine.Snapshot());
+            if (i < 0) return;
+            if (EqEngine.IsExtra(i))
+            {
+                EqEngine.RemoveBand(i);
+                hover = -1;
+                drag = -1;
+            }
+            else
+            {
+                EqEngine.Notify("기본 대역은 지울 수 없어요");
+            }
+            e.Handled = true;
+        }
+
+        protected override void OnMouseWheel(MouseWheelEventArgs e)
+        {
+            int target = drag >= 0 ? drag : hover;
+            if (target < 0) target = HitPoint(e.GetPosition(this), EqEngine.Snapshot());
+            if (target < 0) return;
+            hover = target;
+            bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+            EqEngine.Wheel(target, e.Delta, ctrl);
+            InvalidateVisual();
+            e.Handled = true;
         }
 
         protected override void OnMouseLeave(MouseEventArgs e)

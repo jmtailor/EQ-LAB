@@ -128,21 +128,8 @@ namespace EqLabWin
             }
         }
 
-        /// <summary>밴드 이웃과의 간격(옥타브)에서 정한 Q. 옥타브 간격이면 약 1.41.</summary>
-        static double QFor(int i)
-        {
-            int[] f = EqEngine.Freq;
-            int n = EqEngine.N;
-            double bw;
-            if (i == 0) bw = Math.Log((double)f[1] / f[0], 2.0);
-            else if (i == n - 1) bw = Math.Log((double)f[n - 1] / f[n - 2], 2.0);
-            else bw = (Math.Log((double)f[i] / f[i - 1], 2.0) + Math.Log((double)f[i + 1] / f[i], 2.0)) / 2.0;
-            bw = Math.Max(0.5, Math.Min(1.5, bw));
-            return 1.0 / (2.0 * Math.Sinh(Math.Log(2.0) / 2.0 * bw));
-        }
-
-        /// <summary>현재 게인으로 eqlab.txt 를 다시 쓴다. Equalizer APO 가 파일 변경을 감지해 바로 반영한다.</summary>
-        public static ApoResult Write(double[] g, bool on, bool autoPreamp)
+        /// <summary>현재 대역 목록으로 eqlab.txt 를 다시 쓴다. Equalizer APO 가 파일 변경을 감지해 바로 반영한다.</summary>
+        public static ApoResult Write(Band[] bands, bool on, bool autoPreamp)
         {
             string dir = ConfigDir();
             if (dir == null || !Directory.Exists(dir))
@@ -156,19 +143,19 @@ namespace EqLabWin
             int count = 0;
             if (on)
             {
-                double maxBoost = 0;
-                for (int i = 0; i < g.Length; i++) if (g[i] > maxBoost) maxBoost = g[i];
-                if (autoPreamp && maxBoost > 0.05)
-                    sb.Append("Preamp: ").Append((-maxBoost).ToString("0.0", ci)).Append(" dB\r\n");
+                // 겹친 필터의 실제 최대 부스트만큼 프리앰프를 내려 소리 깨짐을 막는다.
+                double peak = EqEngine.PeakResponse(bands);
+                if (autoPreamp && peak > 0.05)
+                    sb.Append("Preamp: ").Append((-peak).ToString("0.0", ci)).Append(" dB\r\n");
 
-                for (int i = 0; i < g.Length; i++)
+                for (int i = 0; i < bands.Length; i++)
                 {
-                    if (Math.Abs(g[i]) < 0.05) continue;
+                    if (Math.Abs(bands[i].Gain) < 0.05) continue;
                     count++;
                     sb.Append("Filter ").Append(count.ToString(ci)).Append(": ON PK Fc ")
-                      .Append(EqEngine.Freq[i].ToString(ci)).Append(" Hz Gain ")
-                      .Append(g[i].ToString("0.0", ci)).Append(" dB Q ")
-                      .Append(QFor(i).ToString("0.00", ci)).Append("\r\n");
+                      .Append(bands[i].Freq.ToString("0.##", ci)).Append(" Hz Gain ")
+                      .Append(bands[i].Gain.ToString("0.0", ci)).Append(" dB Q ")
+                      .Append(bands[i].Q.ToString("0.00", ci)).Append("\r\n");
                 }
             }
             else

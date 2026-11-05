@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
@@ -15,21 +16,25 @@ namespace EqLabWin
         readonly TextBlock statusText = new TextBlock();
         readonly Border statusBox = new Border();
         readonly StackPanel headerButtons = new StackPanel();
-        readonly TextBlock[] gainText = new TextBlock[EqEngine.N];
+        readonly Border slidersHost = new Border();
+        readonly List<TextBlock> gainText = new List<TextBlock>();
+        readonly List<TextBlock> qText = new List<TextBlock>();
+        readonly List<TextBlock> freqText = new List<TextBlock>();
         readonly WrapPanel presetPanel = new WrapPanel();
         readonly WrapPanel optionPanel = new WrapPanel();
 
         string lastPresetKey;
         string lastOptionKey;
+        string lastStructKey;
         bool spectrumOn = true;
 
         public MainWindow()
         {
             Title = "EQ-LAB for Windows";
-            Width = 1120;
-            Height = 800;
-            MinWidth = 900;
-            MinHeight = 680;
+            Width = 1180;
+            Height = 820;
+            MinWidth = 960;
+            MinHeight = 700;
             Background = Theme.BgBrush;
             Foreground = Theme.TextBrush;
             FontFamily = Theme.Family;
@@ -52,9 +57,10 @@ namespace EqLabWin
             spectrum.Margin = new Thickness(0, 14, 0, 0);
             root.Children.Add(spectrum);
 
-            Grid sliders = BuildSliders();
-            Grid.SetRow(sliders, 2);
-            root.Children.Add(sliders);
+            slidersHost.Height = 260;
+            slidersHost.Margin = new Thickness(0, 12, 0, 0);
+            Grid.SetRow(slidersHost, 2);
+            root.Children.Add(slidersHost);
 
             presetPanel.Margin = new Thickness(0, 16, 0, 0);
             Grid.SetRow(presetPanel, 3);
@@ -108,6 +114,13 @@ namespace EqLabWin
                 Foreground = Theme.MutedBrush,
                 Margin = new Thickness(0, 2, 0, 0)
             });
+            title.Children.Add(new TextBlock
+            {
+                Text = "점 끌기: 게인 · 빈 곳 더블클릭: 대역 추가 · 우클릭: 추가한 대역 삭제 · 휠: 게인 · Ctrl+휠: Q(폭)",
+                Foreground = Theme.MutedBrush,
+                FontSize = 11,
+                Margin = new Thickness(0, 4, 0, 0)
+            });
             Grid.SetColumn(title, 0);
             header.Children.Add(title);
 
@@ -132,45 +145,76 @@ namespace EqLabWin
             return header;
         }
 
-        Grid BuildSliders()
+        /// <summary>대역 구성(추가·삭제)이 바뀔 때마다 슬라이더 줄을 새로 만든다.</summary>
+        void BuildSliders()
         {
-            var grid = new Grid { Height = 250, Margin = new Thickness(0, 12, 0, 0) };
-            for (int i = 0; i < EqEngine.N; i++)
+            gainText.Clear();
+            qText.Clear();
+            freqText.Clear();
+
+            Band[] bs = EqEngine.Snapshot();
+            var grid = new Grid();
+            for (int i = 0; i < bs.Length; i++)
             {
+                int idx = i;
                 grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-                var col = new Grid();
+                var col = new Grid { Background = Brushes.Transparent };
                 col.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 col.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
                 col.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                col.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-                gainText[i] = new TextBlock
+                var gt = new TextBlock
                 {
                     HorizontalAlignment = HorizontalAlignment.Center,
                     FontSize = 13,
                     FontWeight = FontWeights.SemiBold
                 };
-                Grid.SetRow(gainText[i], 0);
-                col.Children.Add(gainText[i]);
+                Grid.SetRow(gt, 0);
+                col.Children.Add(gt);
+                gainText.Add(gt);
 
-                var slider = new BandSlider(i);
+                var slider = new BandSlider(idx);
                 Grid.SetRow(slider, 1);
                 col.Children.Add(slider);
 
-                var label = new TextBlock
+                var ft = new TextBlock
                 {
-                    Text = EqEngine.FreqLabel[i],
                     HorizontalAlignment = HorizontalAlignment.Center,
-                    Foreground = Theme.MutedBrush,
                     Margin = new Thickness(0, 2, 0, 0)
                 };
-                Grid.SetRow(label, 2);
-                col.Children.Add(label);
+                Grid.SetRow(ft, 2);
+                col.Children.Add(ft);
+                freqText.Add(ft);
+
+                var qt = new TextBlock
+                {
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Foreground = Theme.MutedBrush,
+                    FontSize = 11
+                };
+                Grid.SetRow(qt, 3);
+                col.Children.Add(qt);
+                qText.Add(qt);
+
+                // 열 어디서든 휠로 게인, Ctrl+휠로 Q 를 바꾸고, 우클릭으로 추가한 대역을 지운다.
+                col.MouseWheel += (s, e) =>
+                {
+                    EqEngine.Wheel(idx, e.Delta, (Keyboard.Modifiers & ModifierKeys.Control) != 0);
+                    e.Handled = true;
+                };
+                col.MouseRightButtonUp += (s, e) =>
+                {
+                    if (EqEngine.IsExtra(idx)) EqEngine.RemoveBand(idx);
+                    else EqEngine.Notify("기본 대역은 지울 수 없어요");
+                    e.Handled = true;
+                };
 
                 Grid.SetColumn(col, i);
                 grid.Children.Add(col);
             }
-            return grid;
+            slidersHost.Child = grid;
         }
 
         static Border MakeChip(string text, bool selected, Action click, string tip, double bottom)
@@ -208,11 +252,23 @@ namespace EqLabWin
 
         void Refresh()
         {
-            double[] g = EqEngine.Snapshot();
-            for (int i = 0; i < EqEngine.N; i++)
+            string skey = EqEngine.StructKey();
+            if (skey != lastStructKey)
             {
-                gainText[i].Text = FormatGain(g[i]);
-                gainText[i].Foreground = g[i] > 0.05 ? Theme.AccentBrush : (g[i] < -0.05 ? Theme.CutTextBrush : Theme.MutedBrush);
+                lastStructKey = skey;
+                BuildSliders();
+            }
+
+            Band[] bs = EqEngine.Snapshot();
+            int n = Math.Min(bs.Length, gainText.Count);
+            for (int i = 0; i < n; i++)
+            {
+                double g = bs[i].Gain;
+                gainText[i].Text = FormatGain(g);
+                gainText[i].Foreground = g > 0.05 ? Theme.AccentBrush : (g < -0.05 ? Theme.CutTextBrush : Theme.MutedBrush);
+                freqText[i].Text = SpectrumView.FreqText(bs[i].Freq);
+                freqText[i].Foreground = bs[i].Extra ? Theme.AccentBrush : Theme.MutedBrush;
+                qText[i].Text = "Q " + bs[i].Q.ToString("0.#", CultureInfo.InvariantCulture);
             }
 
             string pkey = EqEngine.PresetKey();
@@ -254,13 +310,14 @@ namespace EqLabWin
             headerButtons.Children.Add(MakeChip("진단 기록", false, ShowLog, "연결 상태와 오류 기록을 봐요", 0));
 
             optionPanel.Children.Clear();
-            optionPanel.Children.Add(MakeChip("내 프리셋으로 저장", false, EqEngine.SaveCustom, null, 8));
+            optionPanel.Children.Add(MakeChip("내 프리셋으로 저장", false, EqEngine.SaveCustom,
+                "게인, Q, 추가한 대역을 함께 저장해요", 8));
             if (EqEngine.IsCustom(cur))
                 optionPanel.Children.Add(MakeChip("선택한 프리셋 삭제", false, () => EqEngine.DeleteCustom(cur), null, 8));
-            optionPanel.Children.Add(MakeChip("초기화", false, EqEngine.Reset, "모든 대역을 0dB로", 8));
+            optionPanel.Children.Add(MakeChip("초기화", false, EqEngine.Reset, "모든 대역을 0dB, 기본 Q로 되돌리고 추가한 대역을 지워요", 8));
             optionPanel.Children.Add(MakeChip("클리핑 방지 (자동 프리앰프)", EqEngine.AutoPreamp,
                 () => EqEngine.SetAutoPreamp(!EqEngine.AutoPreamp),
-                "가장 큰 부스트만큼 전체 볼륨을 낮춰 소리 깨짐을 막아요", 8));
+                "필터를 겹친 실제 최대 부스트만큼 전체 볼륨을 낮춰 소리 깨짐을 막아요", 8));
             optionPanel.Children.Add(MakeChip("스펙트럼 표시", spectrumOn, ToggleSpectrum, "재생 중인 소리를 분석해 막대로 보여요", 8));
             optionPanel.Children.Add(MakeChip("스펙트럼 장치: " + capture.PreferredName, false, CycleDevice,
                 "자동은 소리가 나는 출력 장치를 따라가요. 누르면 장치를 하나씩 직접 골라요", 8));

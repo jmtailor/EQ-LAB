@@ -2,18 +2,42 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 
 namespace EqLabWin
 {
+    /// <summary>필터 하나(Equalizer APO 의 PK). 기본 11대역은 주파수가 고정이고, 추가한 대역(Extra)은 옮기고 지울 수 있다.</summary>
+    sealed class Band
+    {
+        public double Freq;
+        public double Gain;
+        public double Q;
+        public bool Extra;
+
+        public Band Clone()
+        {
+            return new Band { Freq = Freq, Gain = Gain, Q = Q, Extra = Extra };
+        }
+    }
+
     sealed class Preset
     {
         public string Id;
         public string Name;
         public string Desc;
-        public double[] Gains;
+        public double[] Gains;       // 기본 11대역 게인
+        public double[] Qs;          // null 이면 기본 Q
+        public List<Band> Extras;    // null 이면 지금 추가한 대역을 그대로 두고 게인만 0으로
         public bool Custom;
+    }
+
+    public sealed class SavedBand
+    {
+        public double Freq { get; set; }
+        public double Gain { get; set; }
+        public double Q { get; set; }
     }
 
     public sealed class SavedCustom
@@ -21,11 +45,15 @@ namespace EqLabWin
         public string Id { get; set; }
         public string Name { get; set; }
         public double[] Gains { get; set; }
+        public double[] Qs { get; set; }
+        public List<SavedBand> Extras { get; set; } = new List<SavedBand>();
     }
 
     public sealed class SavedState
     {
         public double[] Gains { get; set; }
+        public double[] Qs { get; set; }
+        public List<SavedBand> Extras { get; set; } = new List<SavedBand>();
         public bool On { get; set; } = true;
         public string PresetId { get; set; } = "flat";
         public bool AutoPreamp { get; set; } = true;
@@ -34,21 +62,29 @@ namespace EqLabWin
     }
 
     /// <summary>
-    /// 이퀄라이저 상태(11밴드 게인, 켜짐, 프리셋)의 단일 창구. 상태를 바꾸면 Equalizer APO 설정 파일을
+    /// 이퀄라이저 상태(대역 목록, 켜짐, 프리셋)의 단일 창구. 상태를 바꾸면 Equalizer APO 설정 파일을
     /// 작업 스레드에서 다시 쓰고(ApoWriter), 설정은 %APPDATA%\EqLabWin\settings.json 에 저장한다.
+    /// 대역 목록은 항상 주파수 순서이고, 화면은 이 순서의 번호로 대역을 가리킨다.
     /// </summary>
     static class EqEngine
     {
-        public static readonly int[] Freq = { 20, 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
-        public static readonly string[] FreqLabel = { "20", "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
-        public const int N = 11;
+        public static readonly int[] FixedFreq = { 20, 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+        public const int FixedCount = 11;
+        public const int MaxBands = 24;
+        public const double MinHz = 20.0;
+        public const double MaxHz = 16000.0;
+        /// <summary>이웃한 대역 사이의 최소 주파수 비(약 1/4 옥타브). 이보다 가까우면 화면에서 점을 고르기 어렵다.</summary>
+        public const double MinRatio = 1.19;
         public const double MinGain = -12.0;
         public const double MaxGain = 12.0;
         public const double Step = 0.5;
+        public const double MinQ = 0.2;
+        public const double MaxQ = 20.0;
+        public const double ExtraQ = 2.0;
 
         static readonly object gate = new object();
         static readonly object applyGate = new object();
-        static readonly double[] gains = new double[N];
+        static readonly List<Band> bands = MakeDefault();
         static readonly List<Preset> builtins = new List<Preset>
         {
             new Preset { Id = "flat", Name = "플랫", Desc = "원음 그대로", Gains = new double[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } },
@@ -73,6 +109,10 @@ namespace EqLabWin
         public static event Action Changed;
         public static event Action StatusChanged;
 
+        /// <summary>스펙트럼 화면에 잠깐 띄우는 안내(점을 못 만들었을 때 등).</summary>
+        public static volatile string NoticeText;
+        public static long NoticeTick;
+
         static string SettingsPath
         {
             get
@@ -82,16 +122,66 @@ namespace EqLabWin
             }
         }
 
+        // ---------- 기본값 ----------
+
+        /// <summary>기본 대역의 Q. 이웃 대역과의 간격(옥타브)에서 정한다. 옥타브 간격이면 약 1.41.</summary>
+        public static double DefaultQ(int i)
+        {
+            int n = FixedCount;
+            double bw;
+            if (i == 0) bw = Math.Log((double)FixedFreq[1] / FixedFreq[0], 2.0);
+            else if (i == n - 1) bw = Math.Log((double)FixedFreq[n - 1] / FixedFreq[n - 2], 2.0);
+            else bw = (Math.Log((double)FixedFreq[i] / FixedFreq[i - 1], 2.0) + Math.Log((double)FixedFreq[i + 1] / FixedFreq[i], 2.0)) / 2.0;
+            bw = Math.Max(0.5, Math.Min(1.5, bw));
+            return Math.Round(1.0 / (2.0 * Math.Sinh(Math.Log(2.0) / 2.0 * bw)), 2);
+        }
+
+        static List<Band> MakeDefault()
+        {
+            var l = new List<Band>();
+            for (int i = 0; i < FixedCount; i++)
+                l.Add(new Band { Freq = FixedFreq[i], Gain = 0, Q = DefaultQ(i), Extra = false });
+            return l;
+        }
+
         // ---------- 읽기 ----------
 
-        public static double[] Snapshot()
+        public static Band[] Snapshot()
         {
-            lock (gate) { return (double[])gains.Clone(); }
+            lock (gate)
+            {
+                var a = new Band[bands.Count];
+                for (int i = 0; i < a.Length; i++) a[i] = bands[i].Clone();
+                return a;
+            }
         }
+
+        public static int Count { get { lock (gate) { return bands.Count; } } }
 
         public static double GetGain(int i)
         {
-            lock (gate) { return gains[i]; }
+            lock (gate) { return i >= 0 && i < bands.Count ? bands[i].Gain : 0.0; }
+        }
+
+        public static double GetQ(int i)
+        {
+            lock (gate) { return i >= 0 && i < bands.Count ? bands[i].Q : 1.0; }
+        }
+
+        public static bool IsExtra(int i)
+        {
+            lock (gate) { return i >= 0 && i < bands.Count && bands[i].Extra; }
+        }
+
+        /// <summary>대역 구성(기본/추가의 배치)이 바뀌었는지 알아보는 키. 추가 대역을 옮기는 동안에는 바뀌지 않는다.</summary>
+        public static string StructKey()
+        {
+            lock (gate)
+            {
+                var sb = new StringBuilder();
+                foreach (Band b in bands) sb.Append(b.Extra ? 'E' : 'F');
+                return sb.ToString();
+            }
         }
 
         public static bool On { get { lock (gate) { return on; } } }
@@ -124,16 +214,45 @@ namespace EqLabWin
             lock (gate) { return customs.Any(c => c.Id == id); }
         }
 
-        /// <summary>로그 주파수 기준 코사인 보간으로 만든 EQ 곡선의 게인(dB). 안드로이드 화면 곡선과 같은 방식.</summary>
-        public static double Interp(double[] g, double hz)
+        /// <summary>
+        /// 모든 대역(RBJ 피킹 필터)을 겹친 실제 주파수 응답(dB). 화면 곡선과 자동 프리앰프가 이 값을 쓴다.
+        /// 샘플레이트는 48kHz 로 가정한다(표시용).
+        /// </summary>
+        public static double ResponseDb(Band[] b, double hz)
         {
-            if (hz <= Freq[0]) return g[0];
-            if (hz >= Freq[N - 1]) return g[N - 1];
-            int i = 0;
-            while (i < N - 2 && hz > Freq[i + 1]) i++;
-            double t = Math.Log(hz / Freq[i]) / Math.Log((double)Freq[i + 1] / Freq[i]);
-            double s = (1.0 - Math.Cos(Math.PI * t)) / 2.0;
-            return g[i] + (g[i + 1] - g[i]) * s;
+            const double fs = 48000.0;
+            double w = 2.0 * Math.PI * hz / fs;
+            double cw = Math.Cos(w);
+            double c2w = Math.Cos(2.0 * w);
+            double total = 0.0;
+            for (int k = 0; k < b.Length; k++)
+            {
+                if (Math.Abs(b[k].Gain) < 0.001) continue;
+                double A = Math.Pow(10.0, b[k].Gain / 40.0);
+                double w0 = 2.0 * Math.PI * b[k].Freq / fs;
+                double alpha = Math.Sin(w0) / (2.0 * b[k].Q);
+                double c0 = Math.Cos(w0);
+                double b0 = 1.0 + alpha * A, b1 = -2.0 * c0, b2 = 1.0 - alpha * A;
+                double a0 = 1.0 + alpha / A, a1 = -2.0 * c0, a2 = 1.0 - alpha / A;
+                double num = b0 * b0 + b1 * b1 + b2 * b2 + 2.0 * (b0 * b1 + b1 * b2) * cw + 2.0 * b0 * b2 * c2w;
+                double den = a0 * a0 + a1 * a1 + a2 * a2 + 2.0 * (a0 * a1 + a1 * a2) * cw + 2.0 * a0 * a2 * c2w;
+                if (num <= 0.0 || den <= 0.0) continue;
+                total += 10.0 * Math.Log10(num / den);
+            }
+            return total;
+        }
+
+        /// <summary>20Hz~20kHz 에서 응답의 최댓값(dB). 클리핑을 막는 프리앰프 계산에 쓴다.</summary>
+        public static double PeakResponse(Band[] b)
+        {
+            double mx = -100.0;
+            for (int i = 0; i <= 240; i++)
+            {
+                double hz = 20.0 * Math.Pow(1000.0, i / 240.0);
+                double r = ResponseDb(b, hz);
+                if (r > mx) mx = r;
+            }
+            return mx;
         }
 
         // ---------- 변경 ----------
@@ -144,6 +263,11 @@ namespace EqLabWin
             return Math.Max(MinGain, Math.Min(MaxGain, v));
         }
 
+        static double ClampQ(double q)
+        {
+            return Math.Round(Math.Max(MinQ, Math.Min(MaxQ, q)), 2);
+        }
+
         static void Touch()
         {
             var h = Changed;
@@ -152,17 +276,100 @@ namespace EqLabWin
             saveTimer.Change(400, Timeout.Infinite);
         }
 
+        public static void Notify(string msg)
+        {
+            NoticeText = msg;
+            NoticeTick = Environment.TickCount64;
+            var h = Changed;
+            if (h != null) h();
+        }
+
         public static void SetGain(int i, double v)
         {
-            if (i < 0 || i >= N) return;
             v = Clamp(v);
             lock (gate)
             {
-                if (gains[i] == v) return;
-                gains[i] = v;
+                if (i < 0 || i >= bands.Count) return;
+                if (bands[i].Gain == v) return;
+                bands[i].Gain = v;
                 presetId = "";
             }
             Touch();
+        }
+
+        public static void SetQ(int i, double q)
+        {
+            q = ClampQ(q);
+            lock (gate)
+            {
+                if (i < 0 || i >= bands.Count) return;
+                if (bands[i].Q == q) return;
+                bands[i].Q = q;
+                presetId = "";
+            }
+            Touch();
+        }
+
+        /// <summary>마우스 휠 한 칸: 게인 0.5dB, Ctrl 을 누르면 Q 를 12%씩(위로 돌리면 Q 증가 = 폭이 좁아짐).</summary>
+        public static void Wheel(int i, int delta, bool ctrl)
+        {
+            if (ctrl)
+            {
+                double q = GetQ(i);
+                SetQ(i, delta > 0 ? q * 1.12 : q / 1.12);
+            }
+            else
+            {
+                SetGain(i, GetGain(i) + (delta > 0 ? Step : -Step));
+            }
+        }
+
+        /// <summary>추가한 대역의 주파수를 옮긴다. 이웃 대역을 넘지 못하게 막는다. 기본 대역은 못 옮긴다.</summary>
+        public static void SetFreq(int i, double hz)
+        {
+            lock (gate)
+            {
+                if (i < 0 || i >= bands.Count || !bands[i].Extra) return;
+                double lo = i > 0 ? bands[i - 1].Freq * MinRatio : MinHz;
+                double hi = i < bands.Count - 1 ? bands[i + 1].Freq / MinRatio : MaxHz;
+                if (lo > hi) return;
+                hz = Math.Round(Math.Max(lo, Math.Min(hi, hz)));
+                if (bands[i].Freq == hz) return;
+                bands[i].Freq = hz;
+                presetId = "";
+            }
+            Touch();
+        }
+
+        /// <summary>그 주파수에 대역을 하나 더한다(게인 0, Q 2.0). 못 만들면 이유를 돌려준다.</summary>
+        public static string AddBand(double hz)
+        {
+            lock (gate)
+            {
+                if (bands.Count >= MaxBands) return "대역은 최대 " + MaxBands + "개까지 만들 수 있어요";
+                hz = Math.Round(Math.Max(MinHz, Math.Min(MaxHz, hz)));
+                int pos = 0;
+                while (pos < bands.Count && bands[pos].Freq < hz) pos++;
+                if (pos > 0 && hz / bands[pos - 1].Freq < MinRatio) return "이웃한 대역과 너무 가까워요";
+                if (pos < bands.Count && bands[pos].Freq / hz < MinRatio) return "이웃한 대역과 너무 가까워요";
+                bands.Insert(pos, new Band { Freq = hz, Gain = 0, Q = ExtraQ, Extra = true });
+                presetId = "";
+            }
+            Touch();
+            return null;
+        }
+
+        /// <summary>추가한 대역을 지운다. 기본 대역은 지울 수 없다.</summary>
+        public static bool RemoveBand(int i)
+        {
+            lock (gate)
+            {
+                if (i < 0 || i >= bands.Count || !bands[i].Extra) return false;
+                bands.RemoveAt(i);
+                presetId = "";
+            }
+            Touch();
+            return true;
         }
 
         public static void SetOn(bool v)
@@ -183,21 +390,75 @@ namespace EqLabWin
             Touch();
         }
 
+        /// <summary>gate 를 잡은 채로 부른다. 기본 11대역에 값을 넣고, 추가 대역은 규칙에 맞는 것만 주파수 순서로 넣는다.</summary>
+        static void ApplyLayout(double[] g, double[] q, IEnumerable<Band> extras)
+        {
+            bands.Clear();
+            for (int i = 0; i < FixedCount; i++)
+            {
+                bands.Add(new Band
+                {
+                    Freq = FixedFreq[i],
+                    Gain = Clamp(g != null && g.Length == FixedCount ? g[i] : 0.0),
+                    Q = ClampQ(q != null && q.Length == FixedCount ? q[i] : DefaultQ(i)),
+                    Extra = false
+                });
+            }
+            if (extras == null) return;
+            foreach (Band x in extras.OrderBy(t => t.Freq))
+            {
+                if (bands.Count >= MaxBands) break;
+                double hz = Math.Round(x.Freq);
+                if (hz < MinHz || hz > MaxHz) continue;
+                int pos = 0;
+                while (pos < bands.Count && bands[pos].Freq < hz) pos++;
+                if (pos > 0 && hz / bands[pos - 1].Freq < MinRatio) continue;
+                if (pos < bands.Count && bands[pos].Freq / hz < MinRatio) continue;
+                bands.Insert(pos, new Band { Freq = hz, Gain = Clamp(x.Gain), Q = ClampQ(x.Q), Extra = true });
+            }
+        }
+
+        static double[] FixedGainsLocked()
+        {
+            return bands.Where(b => !b.Extra).Select(b => b.Gain).ToArray();
+        }
+
+        static double[] FixedQsLocked()
+        {
+            return bands.Where(b => !b.Extra).Select(b => b.Q).ToArray();
+        }
+
         public static void SelectPreset(string id)
         {
             lock (gate)
             {
                 Preset p = builtins.FirstOrDefault(x => x.Id == id) ?? customs.FirstOrDefault(x => x.Id == id);
                 if (p == null) return;
-                for (int i = 0; i < N; i++) gains[i] = Clamp(p.Gains[i]);
+                List<Band> ex;
+                if (p.Extras != null)
+                {
+                    ex = p.Extras.Select(b => b.Clone()).ToList();
+                }
+                else
+                {
+                    // 기본 프리셋: 추가한 대역은 위치와 Q 를 유지하고 게인만 0으로 둔다.
+                    ex = bands.Where(b => b.Extra).Select(b => new Band { Freq = b.Freq, Gain = 0, Q = b.Q, Extra = true }).ToList();
+                }
+                ApplyLayout(p.Gains, p.Qs, ex);
                 presetId = p.Id;
             }
             Touch();
         }
 
+        /// <summary>모든 대역을 0dB, 기본 Q 로 되돌리고 추가한 대역도 지운다.</summary>
         public static void Reset()
         {
-            SelectPreset("flat");
+            lock (gate)
+            {
+                ApplyLayout(null, null, null);
+                presetId = "flat";
+            }
+            Touch();
         }
 
         public static void SaveCustom()
@@ -209,7 +470,9 @@ namespace EqLabWin
                     Id = "custom_" + Guid.NewGuid().ToString("N").Substring(0, 8),
                     Name = "내 프리셋 " + (customs.Count + 1),
                     Desc = "직접 저장한 프리셋",
-                    Gains = (double[])gains.Clone(),
+                    Gains = FixedGainsLocked(),
+                    Qs = FixedQsLocked(),
+                    Extras = bands.Where(b => b.Extra).Select(b => b.Clone()).ToList(),
                     Custom = true
                 };
                 customs.Add(p);
@@ -239,19 +502,20 @@ namespace EqLabWin
         {
             lock (applyGate)
             {
-                double[] g;
+                Band[] b;
                 bool o;
                 bool ap;
                 lock (gate)
                 {
-                    g = (double[])gains.Clone();
+                    b = new Band[bands.Count];
+                    for (int i = 0; i < b.Length; i++) b[i] = bands[i].Clone();
                     o = on;
                     ap = autoPreamp;
                 }
                 ApoResult r;
                 try
                 {
-                    r = ApoWriter.Write(g, o, ap);
+                    r = ApoWriter.Write(b, o, ap);
                 }
                 catch (Exception e)
                 {
@@ -277,6 +541,17 @@ namespace EqLabWin
 
         // ---------- 저장 ----------
 
+        static List<Band> ToBands(List<SavedBand> l)
+        {
+            var r = new List<Band>();
+            if (l == null) return r;
+            foreach (SavedBand s in l)
+            {
+                if (s != null) r.Add(new Band { Freq = s.Freq, Gain = s.Gain, Q = s.Q <= 0 ? ExtraQ : s.Q, Extra = true });
+            }
+            return r;
+        }
+
         public static void Load()
         {
             try
@@ -286,10 +561,7 @@ namespace EqLabWin
                 if (st == null) return;
                 lock (gate)
                 {
-                    if (st.Gains != null && st.Gains.Length == N)
-                    {
-                        for (int i = 0; i < N; i++) gains[i] = Clamp(st.Gains[i]);
-                    }
+                    ApplyLayout(st.Gains, st.Qs, ToBands(st.Extras));
                     on = st.On;
                     autoPreamp = st.AutoPreamp;
                     composite = st.Composite;
@@ -299,13 +571,15 @@ namespace EqLabWin
                     {
                         foreach (var c in st.Customs)
                         {
-                            if (c == null || c.Gains == null || c.Gains.Length != N || string.IsNullOrEmpty(c.Id)) continue;
+                            if (c == null || c.Gains == null || c.Gains.Length != FixedCount || string.IsNullOrEmpty(c.Id)) continue;
                             customs.Add(new Preset
                             {
                                 Id = c.Id,
                                 Name = string.IsNullOrEmpty(c.Name) ? "내 프리셋" : c.Name,
                                 Desc = "직접 저장한 프리셋",
                                 Gains = c.Gains,
+                                Qs = (c.Qs != null && c.Qs.Length == FixedCount) ? c.Qs : null,
+                                Extras = ToBands(c.Extras),
                                 Custom = true
                             });
                         }
@@ -318,6 +592,11 @@ namespace EqLabWin
             }
         }
 
+        static List<SavedBand> FromBands(IEnumerable<Band> l)
+        {
+            return l.Select(b => new SavedBand { Freq = b.Freq, Gain = b.Gain, Q = b.Q }).ToList();
+        }
+
         public static void SaveNow()
         {
             try
@@ -327,12 +606,21 @@ namespace EqLabWin
                 {
                     st = new SavedState
                     {
-                        Gains = (double[])gains.Clone(),
+                        Gains = FixedGainsLocked(),
+                        Qs = FixedQsLocked(),
+                        Extras = FromBands(bands.Where(b => b.Extra)),
                         On = on,
                         PresetId = presetId,
                         AutoPreamp = autoPreamp,
                         Composite = composite,
-                        Customs = customs.Select(c => new SavedCustom { Id = c.Id, Name = c.Name, Gains = c.Gains }).ToList()
+                        Customs = customs.Select(c => new SavedCustom
+                        {
+                            Id = c.Id,
+                            Name = c.Name,
+                            Gains = c.Gains,
+                            Qs = c.Qs,
+                            Extras = FromBands(c.Extras ?? new List<Band>())
+                        }).ToList()
                     };
                 }
                 string path = SettingsPath;

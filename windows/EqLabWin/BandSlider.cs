@@ -5,11 +5,12 @@ using System.Windows.Media;
 
 namespace EqLabWin
 {
-    /// <summary>알약형 세로 슬라이더 한 줄(대역 하나). 위가 +12dB, 아래가 -12dB.</summary>
+    /// <summary>알약형 세로 슬라이더 한 줄(대역 하나). 위가 +12dB, 아래가 -12dB. 휠 조작은 열 전체에서 받는다(MainWindow).</summary>
     sealed class BandSlider : FrameworkElement
     {
         const double Pad = 14;
         readonly int index;
+        readonly Action repaint;
         bool dragging;
 
         public BandSlider(int index)
@@ -17,7 +18,10 @@ namespace EqLabWin
             this.index = index;
             MinHeight = 120;
             Cursor = Cursors.Hand;
-            EqEngine.Changed += () => InvalidateVisual();
+            repaint = () => InvalidateVisual();
+            // 슬라이더 줄을 다시 만들 때 옛 슬라이더가 남아 갱신을 받지 않도록 화면에 있는 동안만 구독한다.
+            Loaded += (s, e) => EqEngine.Changed += repaint;
+            Unloaded += (s, e) => EqEngine.Changed -= repaint;
         }
 
         double TrackTop { get { return Pad; } }
@@ -86,12 +90,6 @@ namespace EqLabWin
             if (!dragging) return;
             dragging = false;
             ReleaseMouseCapture();
-        }
-
-        protected override void OnMouseWheel(MouseWheelEventArgs e)
-        {
-            EqEngine.SetGain(index, EqEngine.GetGain(index) + (e.Delta > 0 ? EqEngine.Step : -EqEngine.Step));
-            e.Handled = true;
         }
     }
 }
