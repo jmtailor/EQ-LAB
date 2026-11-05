@@ -223,7 +223,7 @@ namespace EqLabWin
             }
 
             string okey = EqEngine.On + "|" + EqEngine.AutoPreamp + "|" + EqEngine.Composite + "|" + spectrumOn
-                          + "|" + EqEngine.CurrentPresetId;
+                          + "|" + EqEngine.CurrentPresetId + "|" + capture.PreferredName;
             if (okey != lastOptionKey)
             {
                 lastOptionKey = okey;
@@ -262,9 +262,18 @@ namespace EqLabWin
                 () => EqEngine.SetAutoPreamp(!EqEngine.AutoPreamp),
                 "가장 큰 부스트만큼 전체 볼륨을 낮춰 소리 깨짐을 막아요", 8));
             optionPanel.Children.Add(MakeChip("스펙트럼 표시", spectrumOn, ToggleSpectrum, "재생 중인 소리를 분석해 막대로 보여요", 8));
+            optionPanel.Children.Add(MakeChip("스펙트럼 장치: " + capture.PreferredName, false, CycleDevice,
+                "자동은 소리가 나는 출력 장치를 따라가요. 누르면 장치를 하나씩 직접 골라요", 8));
             optionPanel.Children.Add(MakeChip(EqEngine.Composite ? "스펙트럼: EQ 곡선 더하기" : "스펙트럼: 캡처 그대로", false,
                 () => EqEngine.SetComposite(!EqEngine.Composite),
                 "막대가 EQ를 바꿔도 변하지 않으면 '더하기'로, 이중으로 움직이면 '캡처 그대로'로 두세요", 8));
+        }
+
+        void CycleDevice()
+        {
+            capture.CycleDevice();
+            lastOptionKey = null;
+            Refresh();
         }
 
         void ToggleSpectrum()
@@ -328,6 +337,7 @@ namespace EqLabWin
             string text = "Equalizer APO 경로: " + (install ?? "찾지 못함") + "\r\n"
                           + "config.txt 연결: " + link + "\r\n"
                           + "스펙트럼: " + capture.State + "\r\n"
+                          + capture.Diagnostics() + "\r\n"
                           + "상태: " + EqEngine.Status + "\r\n\r\n"
                           + EqEngine.LogText();
             var box = new TextBox

@@ -1,12 +1,18 @@
 using System;
+using System.Collections.Generic;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace EqLabWin
 {
     /// <summary>
-    /// 기본 출력 장치에서 재생 중인 소리를 WASAPI loopback 으로 받아 32개 막대(31Hz~16kHz, 로그 간격)의
+    /// 출력 장치에서 재생 중인 소리를 WASAPI loopback 으로 받아 32개 막대(31Hz~16kHz, 로그 간격)의
     /// 레벨(dBFS)을 계산한다. 화면은 Db 를 읽어 간다.
+    /// 장치는 '자동'이면 기본 출력 장치에서 시작하고, 거기서 소리가 없는데 다른 출력 장치에서 소리가 나면
+    /// 그 장치로 옮겨 간다. 장치를 직접 고를 수도 있다(CycleDevice).
     /// </summary>
     sealed class SpectrumCapture : IDisposable
     {
@@ -20,6 +26,7 @@ namespace EqLabWin
         public volatile float[] Db = Silence();
         public long LastTick;
         public volatile string State = "꺼짐";
+        public volatile string PreferredName = "자동";
 
         readonly object sync = new object();
         readonly float[] buf = new float[FftN];
@@ -31,12 +38,21 @@ namespace EqLabWin
         readonly float winSum;
 
         WasapiLoopbackCapture cap;
+        Timer watch;
         bool disposed;
         bool wanted;
         int count;
         int channels = 2;
         int bits = 32;
         int rate = 48000;
+
+        string preferredId;            // null = 자동
+        string currentId;
+        string currentName = "-";
+        string meterInfo = "아직 확인 전";
+        long packets;
+        long lastDataTick;
+        float recentPeak;
 
         public SpectrumCapture()
         {
@@ -69,15 +85,36 @@ namespace EqLabWin
             return a;
         }
 
+        // ---------- 시작·정지 ----------
+
         public void Start()
         {
             lock (sync)
             {
                 wanted = true;
-                if (disposed || cap != null) return;
-                try
+                if (disposed) return;
+                if (watch == null) watch = new Timer(_ => Watch(), null, 2000, 1500);
+                if (cap == null) StartLocked(null);
+            }
+        }
+
+        /// <summary>sync 잠금을 잡은 채로 부른다. forceId 가 없으면 고른 장치, 그것도 없으면 기본 출력 장치.</summary>
+        void StartLocked(string forceId)
+        {
+            try
+            {
+                using (var en = new MMDeviceEnumerator())
                 {
-                    var c = new WasapiLoopbackCapture();
+                    MMDevice dev = null;
+                    string want = forceId ?? preferredId;
+                    if (!string.IsNullOrEmpty(want))
+                    {
+                        try { dev = en.GetDevice(want); }
+                        catch (Exception) { dev = null; }
+                    }
+                    if (dev == null) dev = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+
+                    var c = new WasapiLoopbackCapture(dev);
                     c.DataAvailable += OnData;
                     c.RecordingStopped += OnStopped;
                     channels = c.WaveFormat.Channels;
@@ -86,14 +123,16 @@ namespace EqLabWin
                     count = 0;
                     c.StartRecording();
                     cap = c;
-                    State = "캡처 중 (" + rate + "Hz, " + channels + "채널, " + bits + "비트)";
+                    currentId = dev.ID;
+                    currentName = dev.FriendlyName;
+                    State = "캡처 중 (" + rate + "Hz, " + channels + "채널, " + bits + "비트) · " + currentName;
                 }
-                catch (Exception e)
-                {
-                    State = "캡처 실패: " + e.Message;
-                    EqEngine.Log(State);
-                    ScheduleRetry();
-                }
+            }
+            catch (Exception e)
+            {
+                State = "캡처 실패: " + e.Message;
+                EqEngine.Log(State);
+                ScheduleRetry();
             }
         }
 
@@ -110,13 +149,49 @@ namespace EqLabWin
             DisposeCapture(c);
         }
 
+        void SwitchTo(string id)
+        {
+            WasapiLoopbackCapture old;
+            lock (sync)
+            {
+                if (!wanted || disposed) return;
+                old = cap;
+                cap = null;
+                StartLocked(id);
+            }
+            DisposeCapture(old);
+            EqEngine.Log("스펙트럼 장치: " + currentName);
+        }
+
+        /// <summary>자동 → 출력 장치 1 → 출력 장치 2 … → 자동 순서로 바꾼다.</summary>
+        public void CycleDevice()
+        {
+            var ids = new List<string> { null };
+            var names = new List<string> { "자동" };
+            using (var en = new MMDeviceEnumerator())
+            {
+                foreach (MMDevice d in en.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+                {
+                    ids.Add(d.ID);
+                    names.Add(d.FriendlyName);
+                }
+            }
+            int cur = ids.IndexOf(preferredId);
+            if (cur < 0) cur = 0;
+            int next = (cur + 1) % ids.Count;
+            preferredId = ids[next];
+            PreferredName = names[next];
+            SwitchTo(preferredId);
+        }
+
         void ScheduleRetry()
         {
             Task.Delay(1500).ContinueWith(t =>
             {
-                bool again;
-                lock (sync) { again = wanted && !disposed && cap == null; }
-                if (again) Start();
+                lock (sync)
+                {
+                    if (wanted && !disposed && cap == null) StartLocked(null);
+                }
             });
         }
 
@@ -139,16 +214,84 @@ namespace EqLabWin
                 bool retry;
                 lock (sync)
                 {
+                    // 이미 다른 캡처로 바뀌었거나 일부러 멈춘 경우의 중지 알림은 무시한다.
+                    if (!ReferenceEquals(sender, cap)) return;
                     c = cap;
                     cap = null;
                     retry = wanted && !disposed;
-                    if (!disposed && wanted) State = "캡처가 멈춰 다시 시도 중";
+                    if (retry) State = "캡처가 멈춰 다시 시도 중";
                 }
                 if (e.Exception != null) EqEngine.Log("캡처 중지: " + e.Exception.Message);
                 DisposeCapture(c);
                 if (retry) ScheduleRetry();
             });
         }
+
+        // ---------- 장치 감시 ----------
+
+        /// <summary>1.5초마다 출력 장치별 재생 피크를 보고, 자동 모드에서 소리가 나는 장치로 옮겨 간다.</summary>
+        void Watch()
+        {
+            try
+            {
+                string curId;
+                string pref;
+                lock (sync)
+                {
+                    if (!wanted || disposed) return;
+                    curId = currentId;
+                    pref = preferredId;
+                }
+
+                float curPeak = 0f;
+                float bestPeak = 0f;
+                string bestId = null;
+                string defId = null;
+                var sb = new StringBuilder();
+                using (var en = new MMDeviceEnumerator())
+                {
+                    defId = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia).ID;
+                    foreach (MMDevice d in en.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+                    {
+                        float p = 0f;
+                        try { p = d.AudioMeterInformation.MasterPeakValue; }
+                        catch (Exception) { }
+                        sb.Append(d.FriendlyName);
+                        if (d.ID == curId) sb.Append(" [캡처 중]");
+                        if (d.ID == defId) sb.Append(" [기본]");
+                        sb.Append(" · 재생 피크 ").Append(p.ToString("0.000")).Append("\r\n");
+                        if (d.ID == curId) curPeak = p;
+                        if (p > bestPeak)
+                        {
+                            bestPeak = p;
+                            bestId = d.ID;
+                        }
+                    }
+                }
+                meterInfo = sb.ToString();
+
+                if (!string.IsNullOrEmpty(pref)) return;
+                if (curPeak >= 0.0005f) return;
+                if (bestId != null && bestPeak > 0.002f && bestId != curId) SwitchTo(bestId);
+                else if (bestId == null && defId != curId) SwitchTo(defId);
+            }
+            catch (Exception e)
+            {
+                meterInfo = "장치 확인 실패: " + e.Message;
+            }
+        }
+
+        public string Diagnostics()
+        {
+            long last = Interlocked.Read(ref lastDataTick);
+            string age = last == 0 ? "아직 없음" : (Environment.TickCount64 - last) + "ms 전";
+            return "스펙트럼 장치: " + PreferredName + " (현재 " + currentName + ")\r\n"
+                   + "패킷 수신: " + Interlocked.Read(ref packets) + "회, 마지막 수신 " + age
+                   + ", 마지막 패킷 최대 샘플 " + recentPeak.ToString("0.0000") + "\r\n"
+                   + "출력 장치별 재생 상태:\r\n" + meterInfo;
+        }
+
+        // ---------- 분석 ----------
 
         void OnData(object sender, WaveInEventArgs e)
         {
@@ -158,17 +301,25 @@ namespace EqLabWin
             int frame = ch * bytes;
             int frames = e.BytesRecorded / frame;
             byte[] data = e.Buffer;
+            float mx = 0f;
             for (int f = 0; f < frames; f++)
             {
                 int off = f * frame;
                 float sum = 0f;
                 for (int c = 0; c < ch; c++)
                 {
-                    if (bits == 32) sum += BitConverter.ToSingle(data, off + c * 4);
-                    else sum += BitConverter.ToInt16(data, off + c * 2) / 32768f;
+                    float v = bits == 32
+                        ? BitConverter.ToSingle(data, off + c * 4)
+                        : BitConverter.ToInt16(data, off + c * 2) / 32768f;
+                    sum += v;
+                    float a = v < 0f ? -v : v;
+                    if (a > mx) mx = a;
                 }
                 Push(sum / ch);
             }
+            recentPeak = mx;
+            Interlocked.Exchange(ref lastDataTick, Environment.TickCount64);
+            Interlocked.Increment(ref packets);
         }
 
         void Push(float s)
@@ -256,13 +407,17 @@ namespace EqLabWin
         public void Dispose()
         {
             WasapiLoopbackCapture c;
+            Timer w;
             lock (sync)
             {
                 disposed = true;
                 wanted = false;
                 c = cap;
                 cap = null;
+                w = watch;
+                watch = null;
             }
+            if (w != null) w.Dispose();
             DisposeCapture(c);
         }
     }

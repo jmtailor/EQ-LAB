@@ -141,6 +141,9 @@ namespace EqLabWin
                 double bw = (x2 - x1) * 0.72;
                 double bx = (x1 + x2) / 2.0 - bw / 2.0;
 
+                // 소리가 없을 때(바닥)는 곡선 값을 더하지 않고 막대를 그리지 않는다.
+                if (shown[b] <= DbFloor + 0.5f) continue;
+
                 double frac = Math.Max(0.0, Math.Min(1.0, (shown[b] + off - DbFloor) / (0.0 - DbFloor)));
                 double h = frac * PlotH;
                 if (h >= 1.0) dc.DrawRectangle(barBrush[b], null, new Rect(bx, bottom - h, bw, h));
