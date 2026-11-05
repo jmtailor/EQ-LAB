@@ -80,8 +80,8 @@ namespace EqLabWin
             return Mix(C(Spectrum[i]), C(Spectrum[i + 1]), p - i);
         }
 
-        /// <summary>레벨 색: 낮으면 초록, 높을수록 노랑·주황을 거쳐 빨강. t 는 0(낮음)~1(높음).</summary>
-        static readonly uint[] LevelStops = { 0xFF22E06B, 0xFFB8E34A, 0xFFFFC83C, 0xFFFF8A3C, 0xFFFF3B3B };
+        /// <summary>레벨 색(마그마): 낮으면 남색, 자홍·주황을 거쳐 높을수록 밝은 노랑. t 는 0(낮음)~1(높음).</summary>
+        static readonly uint[] LevelStops = { 0xFF3A2A9A, 0xFF8C28A0, 0xFFE65064, 0xFFFFA032, 0xFFFFEB78 };
 
         public static Color LevelColor(double t)
         {
@@ -91,12 +91,18 @@ namespace EqLabWin
             return Mix(C(LevelStops[i]), C(LevelStops[i + 1]), p - i);
         }
 
-        /// <summary>폭 색: 폭이 넓으면(Q 낮음) 파랑, 좁을수록(Q 높음) 보라. Q 0.2~20 을 로그 척도로 매긴다.</summary>
-        public static Color BandwidthColor(double q)
+        /// <summary>
+        /// 폭 색: 폭이 넓으면(Q 낮음) 한쪽 끝, 좁을수록(Q 높음) 다른 끝. Q 0.2~20 을 로그 척도로 매긴다.
+        /// 기본 11대역은 파랑→보라, 추가한 대역은 에메랄드→라임으로 구분한다(스펙트럼의 마그마 색과도 겹치지 않는 색).
+        /// </summary>
+        public static Color BandwidthColor(double q, bool extra)
         {
             double t = (Math.Log(Math.Max(0.2, Math.Min(20.0, q))) - Math.Log(0.2)) / (Math.Log(20.0) - Math.Log(0.2));
+            if (extra) return Mix(C(0xFF1FE08A), C(0xFFB6F23C), t);
             return Mix(C(0xFF4DA3FF), C(0xFFB45CFF), t);
         }
+
+        public static readonly SolidColorBrush ExtraBrush = B(0xFF1FE08A);
 
         public static SolidColorBrush Frozen(Color c)
         {

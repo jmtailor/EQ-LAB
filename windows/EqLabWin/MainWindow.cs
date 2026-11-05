@@ -268,9 +268,9 @@ namespace EqLabWin
                 gainText[i].Text = FormatGain(g);
                 gainText[i].Foreground = g > 0.05 ? Theme.AccentBrush : (g < -0.05 ? Theme.CutTextBrush : Theme.MutedBrush);
                 freqText[i].Text = SpectrumView.FreqText(bs[i].Freq);
-                freqText[i].Foreground = bs[i].Extra ? Theme.AccentBrush : Theme.MutedBrush;
+                freqText[i].Foreground = bs[i].Extra ? Theme.ExtraBrush : Theme.MutedBrush;
                 qText[i].Text = "Q " + bs[i].Q.ToString("0.#", CultureInfo.InvariantCulture);
-                qText[i].Foreground = Theme.Frozen(Theme.BandwidthColor(bs[i].Q));
+                qText[i].Foreground = Theme.Frozen(Theme.BandwidthColor(bs[i].Q, bs[i].Extra));
             }
 
             string pkey = EqEngine.PresetKey();

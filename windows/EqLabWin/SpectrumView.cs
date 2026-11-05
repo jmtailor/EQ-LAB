@@ -191,7 +191,7 @@ namespace EqLabWin
             cGeo = geo;
 
             cPointBrush = new Brush[bs.Length];
-            for (int i = 0; i < bs.Length; i++) cPointBrush[i] = Theme.Frozen(Theme.BandwidthColor(bs[i].Q));
+            for (int i = 0; i < bs.Length; i++) cPointBrush[i] = Theme.Frozen(Theme.BandwidthColor(bs[i].Q, bs[i].Extra));
         }
 
         void EnsureGradient(double bottom)
