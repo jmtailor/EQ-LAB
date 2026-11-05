@@ -54,7 +54,8 @@ namespace EqLabWin
                 new Rect(cx - tw / 2.0, TrackTop, tw, TrackBottom - TrackTop), 6, 6);
 
             double y0 = YOf(0.0), y = YOf(g);
-            Brush fill = g >= 0 ? Theme.AccentBrush : Theme.CutBrush;
+            // 색은 이 대역의 폭(Q): 넓으면 파랑, 좁으면 보라
+            Brush fill = Theme.Frozen(Theme.BandwidthColor(EqEngine.GetQ(index)));
             dc.PushOpacity(eqOn ? 1.0 : 0.45);
             if (Math.Abs(y - y0) > 0.5)
                 dc.DrawRoundedRectangle(fill, null,

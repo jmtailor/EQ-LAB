@@ -16,9 +16,10 @@ namespace EqLabWin
     /// </summary>
     sealed class SpectrumCapture : IDisposable
     {
-        public const int Bars = 32;
+        public const int Bars = 96;
         const int FftN = 4096;
-        const int Hop = 2048;
+        // 512샘플(48kHz 기준 약 10.7ms)마다 갱신: 초당 약 94번. 창은 4096이라 겹침 87.5%.
+        const int Hop = 512;
 
         public static readonly double Ratio = Math.Pow(16000.0 / 31.0, 1.0 / (Bars - 1));
         public static readonly double[] BarFreq = MakeBarFreq();
@@ -33,6 +34,7 @@ namespace EqLabWin
         readonly float[] win = new float[FftN];
         readonly float[] re = new float[FftN];
         readonly float[] im = new float[FftN];
+        readonly float[] mag = new float[FftN / 2];
         readonly float[] cosT = new float[FftN / 2];
         readonly float[] sinT = new float[FftN / 2];
         readonly float winSum;
@@ -342,22 +344,38 @@ namespace EqLabWin
 
             double sqrtR = Math.Sqrt(Ratio);
             int half = FftN / 2;
+            for (int k = 0; k < half; k++)
+                mag[k] = (float)Math.Sqrt(re[k] * re[k] + im[k] * im[k]) * 2f / winSum;
+
             var db = new float[Bars];
             for (int b = 0; b < Bars; b++)
             {
-                double lo = BarFreq[b] / sqrtR;
-                double hi = BarFreq[b] * sqrtR;
-                int k0 = (int)Math.Round(lo * FftN / rate);
-                int k1 = (int)Math.Round(hi * FftN / rate);
-                if (k0 < 1) k0 = 1;
-                if (k1 < k0) k1 = k0;
-                if (k1 > half - 1) k1 = half - 1;
-                if (k0 > k1) k0 = k1;
-                float peak = 0f;
-                for (int k = k0; k <= k1; k++)
+                double kc = BarFreq[b] * FftN / rate;
+                double k0d = BarFreq[b] / sqrtR * FftN / rate;
+                double k1d = BarFreq[b] * sqrtR * FftN / rate;
+                float peak;
+                if (k1d - k0d < 1.0)
                 {
-                    float m = (float)Math.Sqrt(re[k] * re[k] + im[k] * im[k]) * 2f / winSum;
-                    if (m > peak) peak = m;
+                    // 막대가 FFT 빈(약 11.7Hz)보다 좁은 저음 쪽은 이웃 빈 사이를 선형 보간한다.
+                    // 실제 해상도가 늘어나는 것은 아니고 계단처럼 보이지 않게 이어 주는 것이다.
+                    int ka = (int)Math.Floor(kc);
+                    if (ka < 1) ka = 1;
+                    if (ka > half - 2) ka = half - 2;
+                    double fr = Math.Max(0.0, Math.Min(1.0, kc - ka));
+                    peak = (float)(mag[ka] * (1.0 - fr) + mag[ka + 1] * fr);
+                }
+                else
+                {
+                    int k0 = (int)Math.Ceiling(k0d);
+                    int k1 = (int)Math.Floor(k1d);
+                    if (k0 < 1) k0 = 1;
+                    if (k1 > half - 1) k1 = half - 1;
+                    if (k0 > k1) k0 = k1;
+                    peak = 0f;
+                    for (int k = k0; k <= k1; k++)
+                    {
+                        if (mag[k] > peak) peak = mag[k];
+                    }
                 }
                 double d = 20.0 * Math.Log10(Math.Max(peak, 1e-6f));
                 db[b] = (float)Math.Max(d, -100.0);

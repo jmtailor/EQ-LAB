@@ -31,21 +31,23 @@ namespace EqLabWin
         public MainWindow()
         {
             Title = "EQ-LAB for Windows";
-            Width = 1180;
-            Height = 820;
-            MinWidth = 960;
-            MinHeight = 700;
+            Width = 1240;
+            Height = 920;
+            MinWidth = 1000;
+            MinHeight = 760;
             Background = Theme.BgBrush;
             Foreground = Theme.TextBrush;
             FontFamily = Theme.Family;
             FontSize = 13;
+            TitleBar.Attach(this);
 
-            spectrum = new SpectrumView(capture) { MinHeight = 240 };
+            spectrum = new SpectrumView(capture) { MinHeight = 200 };
 
+            // 스펙트럼 : 슬라이더 = 7 : 3 (슬라이더 줄이 너무 낮아지지 않게 최소 높이만 둔다)
             var root = new Grid { Margin = new Thickness(18) };
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(7, GridUnitType.Star) });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(3, GridUnitType.Star), MinHeight = 150 });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
@@ -57,7 +59,6 @@ namespace EqLabWin
             spectrum.Margin = new Thickness(0, 14, 0, 0);
             root.Children.Add(spectrum);
 
-            slidersHost.Height = 260;
             slidersHost.Margin = new Thickness(0, 12, 0, 0);
             Grid.SetRow(slidersHost, 2);
             root.Children.Add(slidersHost);
@@ -269,6 +270,7 @@ namespace EqLabWin
                 freqText[i].Text = SpectrumView.FreqText(bs[i].Freq);
                 freqText[i].Foreground = bs[i].Extra ? Theme.AccentBrush : Theme.MutedBrush;
                 qText[i].Text = "Q " + bs[i].Q.ToString("0.#", CultureInfo.InvariantCulture);
+                qText[i].Foreground = Theme.Frozen(Theme.BandwidthColor(bs[i].Q));
             }
 
             string pkey = EqEngine.PresetKey();
@@ -418,6 +420,7 @@ namespace EqLabWin
                 Background = Theme.BgBrush,
                 Content = box
             };
+            TitleBar.Attach(w);
             w.ShowDialog();
         }
     }

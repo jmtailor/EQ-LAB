@@ -80,6 +80,24 @@ namespace EqLabWin
             return Mix(C(Spectrum[i]), C(Spectrum[i + 1]), p - i);
         }
 
+        /// <summary>레벨 색: 낮으면 초록, 높을수록 노랑·주황을 거쳐 빨강. t 는 0(낮음)~1(높음).</summary>
+        static readonly uint[] LevelStops = { 0xFF22E06B, 0xFFB8E34A, 0xFFFFC83C, 0xFFFF8A3C, 0xFFFF3B3B };
+
+        public static Color LevelColor(double t)
+        {
+            t = Math.Max(0.0, Math.Min(1.0, t));
+            double p = t * (LevelStops.Length - 1);
+            int i = Math.Min(LevelStops.Length - 2, (int)p);
+            return Mix(C(LevelStops[i]), C(LevelStops[i + 1]), p - i);
+        }
+
+        /// <summary>폭 색: 폭이 넓으면(Q 낮음) 파랑, 좁을수록(Q 높음) 보라. Q 0.2~20 을 로그 척도로 매긴다.</summary>
+        public static Color BandwidthColor(double q)
+        {
+            double t = (Math.Log(Math.Max(0.2, Math.Min(20.0, q))) - Math.Log(0.2)) / (Math.Log(20.0) - Math.Log(0.2));
+            return Mix(C(0xFF4DA3FF), C(0xFFB45CFF), t);
+        }
+
         public static SolidColorBrush Frozen(Color c)
         {
             var b = new SolidColorBrush(c);

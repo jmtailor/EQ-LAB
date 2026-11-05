@@ -4,12 +4,12 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Threading;
 
 namespace EqLabWin
 {
     /// <summary>
-    /// 스펙트럼 막대(주파수별 색), 피크 홀드, EQ 곡선(글로우), 끌 수 있는 대역 점을 한 화면에 그린다.
+    /// 스펙트럼 막대(레벨 그라데이션: 낮으면 초록 → 높으면 빨강), 피크 홀드, EQ 곡선(글로우), 끌 수 있는 대역 점
+    /// (폭 색: 넓으면 파랑 → 좁으면 보라)을 한 화면에 그린다. 모니터 주사율에 맞춰 그린다.
     /// 가로축은 20Hz~16kHz 로그, 곡선의 세로축은 -12~+12dB.
     /// 점 조작: 끌기(게인, 추가한 점은 주파수도), 더블클릭(점은 0dB로, 빈 곳은 점 추가), 우클릭(추가한 점 삭제),
     /// 휠(게인), Ctrl+휠(Q).
@@ -17,16 +17,31 @@ namespace EqLabWin
     sealed class SpectrumView : FrameworkElement
     {
         const double PadL = 10, PadR = 10, PadT = 12, PadB = 26;
-        const float DbFloor = -80f;
+        const float DbFloor = -80f;     // 이 아래는 무음으로 보고 막대를 그리지 않는다
+        const float DispFloor = -72f;   // 막대 높이가 0이 되는 레벨(화면 맨 아래)
+        const int Lut = 48;
 
         readonly SpectrumCapture capture;
         readonly float[] shown = new float[SpectrumCapture.Bars];
         readonly float[] peak = new float[SpectrumCapture.Bars];
-        readonly int[] peakHold = new int[SpectrumCapture.Bars];
-        readonly Brush[] barBrush = new Brush[SpectrumCapture.Bars];
-        readonly Brush[] peakBrush = new Brush[SpectrumCapture.Bars];
-        readonly DispatcherTimer timer;
+        readonly float[] peakHold = new float[SpectrumCapture.Bars];
+        readonly Brush[] capBrush = new Brush[Lut];
 
+        // 상태가 바뀌었거나 크기가 바뀐 때만 다시 계산하는 값
+        int cVer = -1;
+        double cW, cH;
+        Band[] cBands;
+        StreamGeometry cGeo;
+        Brush[] cPointBrush;
+        readonly double[] cOff = new double[SpectrumCapture.Bars];
+        readonly double[] cBx = new double[SpectrumCapture.Bars];
+        readonly double[] cBw = new double[SpectrumCapture.Bars];
+
+        LinearGradientBrush levelBrush;
+        double lbBottom = double.NaN;
+
+        TimeSpan lastRender = TimeSpan.Zero;
+        bool hooked;
         int drag = -1;
         int hover = -1;
 
@@ -44,16 +59,44 @@ namespace EqLabWin
             {
                 shown[b] = DbFloor;
                 peak[b] = DbFloor;
-                Color c = Theme.SpectrumAt(b / (SpectrumCapture.Bars - 1.0));
-                barBrush[b] = Theme.Frozen(Color.FromArgb(190, c.R, c.G, c.B));
-                peakBrush[b] = Theme.Frozen(Color.FromArgb(255,
-                    (byte)Math.Min(255, c.R + 60), (byte)Math.Min(255, c.G + 60), (byte)Math.Min(255, c.B + 60)));
             }
-            timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
-            timer.Tick += (s, e) => { Step(); InvalidateVisual(); };
-            Loaded += (s, e) => timer.Start();
-            Unloaded += (s, e) => timer.Stop();
+            for (int i = 0; i < Lut; i++)
+            {
+                Color c = Theme.LevelColor(i / (Lut - 1.0));
+                capBrush[i] = Theme.Frozen(Color.FromRgb(
+                    (byte)Math.Min(255, c.R + 70), (byte)Math.Min(255, c.G + 70), (byte)Math.Min(255, c.B + 70)));
+            }
+            Loaded += (s, e) => Hook();
+            Unloaded += (s, e) => Unhook();
             EqEngine.Changed += () => InvalidateVisual();
+        }
+
+        void Hook()
+        {
+            if (hooked) return;
+            CompositionTarget.Rendering += OnFrame;
+            hooked = true;
+        }
+
+        void Unhook()
+        {
+            if (!hooked) return;
+            CompositionTarget.Rendering -= OnFrame;
+            hooked = false;
+            lastRender = TimeSpan.Zero;
+        }
+
+        /// <summary>모니터 주사율마다(보통 60~144Hz) 한 번 불린다. 같은 프레임에 중복으로 오면 무시한다.</summary>
+        void OnFrame(object sender, EventArgs e)
+        {
+            var args = e as RenderingEventArgs;
+            TimeSpan t = args != null ? args.RenderingTime : TimeSpan.Zero;
+            if (args != null && t == lastRender) return;
+            double dt = lastRender == TimeSpan.Zero ? 0.016 : (t - lastRender).TotalSeconds;
+            lastRender = t;
+            dt = Math.Max(0.001, Math.Min(0.1, dt));
+            Step((float)dt);
+            InvalidateVisual();
         }
 
         // ---------- 좌표 ----------
@@ -87,24 +130,88 @@ namespace EqLabWin
 
         // ---------- 갱신 ----------
 
-        void Step()
+        /// <summary>프레임 간격(dt, 초)에 맞춰 막대를 올리고 내린다. 오를 때는 바로, 내릴 때는 초당 80dB.</summary>
+        void Step(float dt)
         {
             float[] db = capture.Db;
             bool stale = Environment.TickCount64 - Volatile.Read(ref capture.LastTick) > 250;
+            float fall = 80f * dt;
+            float peakFall = 30f * dt;
             for (int b = 0; b < SpectrumCapture.Bars; b++)
             {
                 float target = stale ? DbFloor : Math.Max(db[b], DbFloor);
                 if (target > shown[b]) shown[b] = target;
-                else shown[b] = Math.Max(target, shown[b] - 2.5f);
+                else shown[b] = Math.Max(target, shown[b] - fall);
 
                 if (shown[b] >= peak[b])
                 {
                     peak[b] = shown[b];
-                    peakHold[b] = 20;
+                    peakHold[b] = 0.6f;
                 }
-                else if (peakHold[b] > 0) peakHold[b]--;
-                else peak[b] = Math.Max(DbFloor, peak[b] - 1.0f);
+                else if (peakHold[b] > 0f) peakHold[b] -= dt;
+                else peak[b] = Math.Max(DbFloor, peak[b] - peakFall);
             }
+        }
+
+        void EnsureCache(double W, double H)
+        {
+            int v = EqEngine.Version;
+            if (v == cVer && W == cW && H == cH && cBands != null) return;
+            cVer = v;
+            cW = W;
+            cH = H;
+
+            Band[] bs = EqEngine.Snapshot();
+            cBands = bs;
+            bool addCurve = EqEngine.Composite && EqEngine.On;
+            double sqrtR = Math.Sqrt(SpectrumCapture.Ratio);
+            for (int b = 0; b < SpectrumCapture.Bars; b++)
+            {
+                double f = SpectrumCapture.BarFreq[b];
+                cOff[b] = addCurve ? EqEngine.ResponseDb(bs, f) : 0.0;
+                double x1 = XOf(f / sqrtR), x2 = XOf(f * sqrtR);
+                cBw[b] = Math.Max(1.0, (x2 - x1) * 0.8);
+                cBx[b] = (x1 + x2) / 2.0 - cBw[b] / 2.0;
+            }
+
+            // EQ 곡선: 모든 대역 필터를 겹친 실제 응답
+            var geo = new StreamGeometry();
+            using (StreamGeometryContext ctx = geo.Open())
+            {
+                const int steps = 200;
+                for (int i = 0; i <= steps; i++)
+                {
+                    double hz = 20.0 * Math.Pow(800.0, i / (double)steps);
+                    var pt = new Point(XOf(hz), YOf(EqEngine.ResponseDb(bs, hz)));
+                    if (i == 0) ctx.BeginFigure(pt, false, false);
+                    else ctx.LineTo(pt, true, true);
+                }
+            }
+            geo.Freeze();
+            cGeo = geo;
+
+            cPointBrush = new Brush[bs.Length];
+            for (int i = 0; i < bs.Length; i++) cPointBrush[i] = Theme.Frozen(Theme.BandwidthColor(bs[i].Q));
+        }
+
+        void EnsureGradient(double bottom)
+        {
+            if (levelBrush != null && lbBottom == bottom) return;
+            lbBottom = bottom;
+            var g = new LinearGradientBrush
+            {
+                MappingMode = BrushMappingMode.Absolute,
+                StartPoint = new Point(0, bottom),
+                EndPoint = new Point(0, PadT)
+            };
+            for (int i = 0; i <= 5; i++)
+            {
+                double t = i / 5.0;
+                Color c = Theme.LevelColor(t);
+                g.GradientStops.Add(new GradientStop(Color.FromArgb(225, c.R, c.G, c.B), t));
+            }
+            g.Freeze();
+            levelBrush = g;
         }
 
         // ---------- 그리기 ----------
@@ -121,11 +228,13 @@ namespace EqLabWin
             double W = ActualWidth, H = ActualHeight;
             if (W < 120 || H < 100) return;
 
-            dc.DrawRoundedRectangle(Theme.SurfaceBrush, Theme.PenBorder, new Rect(0.5, 0.5, W - 1, H - 1), 12, 12);
-
+            EnsureCache(W, H);
             double bottom = PadT + PlotH;
-            Band[] bs = EqEngine.Snapshot();
+            EnsureGradient(bottom);
+            Band[] bs = cBands;
             bool eqOn = EqEngine.On;
+
+            dc.DrawRoundedRectangle(Theme.SurfaceBrush, Theme.PenBorder, new Rect(0.5, 0.5, W - 1, H - 1), 12, 12);
 
             // 격자: 주파수 세로선과 게인 가로선
             int[] gridHz = { 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
@@ -145,48 +254,32 @@ namespace EqLabWin
                 Text(dc, lab, PadL + 4, y - 14, Theme.MutedBrush, 10, false);
             }
 
-            // 스펙트럼 막대
-            bool addCurve = EqEngine.Composite && eqOn;
-            double sqrtR = Math.Sqrt(SpectrumCapture.Ratio);
+            // 스펙트럼 막대: 높이는 레벨, 색은 화면 높이에 고정된 그라데이션(낮은 곳 초록 → 높은 곳 빨강)
+            double span = 0.0 - DispFloor;
             for (int b = 0; b < SpectrumCapture.Bars; b++)
             {
-                double f = SpectrumCapture.BarFreq[b];
-                double off = addCurve ? EqEngine.ResponseDb(bs, f) : 0.0;
-                double x1 = XOf(f / sqrtR), x2 = XOf(f * sqrtR);
-                double bw = (x2 - x1) * 0.72;
-                double bx = (x1 + x2) / 2.0 - bw / 2.0;
-
                 // 소리가 없을 때(바닥)는 곡선 값을 더하지 않고 막대를 그리지 않는다.
                 if (shown[b] <= DbFloor + 0.5f) continue;
 
-                double frac = Math.Max(0.0, Math.Min(1.0, (shown[b] + off - DbFloor) / (0.0 - DbFloor)));
+                double frac = Math.Max(0.0, Math.Min(1.0, (shown[b] + cOff[b] - DispFloor) / span));
                 double h = frac * PlotH;
-                if (h >= 1.0) dc.DrawRectangle(barBrush[b], null, new Rect(bx, bottom - h, bw, h));
+                if (h >= 1.0) dc.DrawRectangle(levelBrush, null, new Rect(cBx[b], bottom - h, cBw[b], h));
 
-                double pf = Math.Max(0.0, Math.Min(1.0, (peak[b] + off - DbFloor) / (0.0 - DbFloor)));
-                if (pf > 0.01) dc.DrawRectangle(peakBrush[b], null, new Rect(bx, bottom - pf * PlotH - 1.5, bw, 2.0));
-            }
-
-            // EQ 곡선: 모든 대역 필터를 겹친 실제 응답 (꺼지면 흐리게)
-            var geo = new StreamGeometry();
-            using (StreamGeometryContext ctx = geo.Open())
-            {
-                const int steps = 200;
-                for (int i = 0; i <= steps; i++)
+                double pf = Math.Max(0.0, Math.Min(1.0, (peak[b] + cOff[b] - DispFloor) / span));
+                if (pf > 0.01)
                 {
-                    double hz = 20.0 * Math.Pow(800.0, i / (double)steps);
-                    var pt = new Point(XOf(hz), YOf(EqEngine.ResponseDb(bs, hz)));
-                    if (i == 0) ctx.BeginFigure(pt, false, false);
-                    else ctx.LineTo(pt, true, true);
+                    int li = (int)Math.Round(pf * (Lut - 1));
+                    dc.DrawRectangle(capBrush[li], null, new Rect(cBx[b], bottom - pf * PlotH - 2.0, cBw[b], 2.0));
                 }
             }
-            geo.Freeze();
-            if (eqOn) dc.DrawGeometry(null, Theme.PenGlow, geo);
+
+            // EQ 곡선 (꺼지면 흐리게)
+            if (eqOn) dc.DrawGeometry(null, Theme.PenGlow, cGeo);
             dc.PushOpacity(eqOn ? 1.0 : 0.35);
-            dc.DrawGeometry(null, Theme.PenCurve, geo);
+            dc.DrawGeometry(null, Theme.PenCurve, cGeo);
             dc.Pop();
 
-            // 점 (기본 대역은 어두운 테두리, 추가한 대역은 흰 테두리)
+            // 점 (색은 폭: 넓으면 파랑, 좁으면 보라. 기본 대역은 어두운 테두리, 추가한 대역은 흰 테두리)
             for (int i = 0; i < bs.Length; i++)
             {
                 var c = new Point(XOf(bs[i].Freq), YOf(bs[i].Gain));
@@ -198,15 +291,15 @@ namespace EqLabWin
                     double bwOct = 2.0 / Math.Log(2.0) * Math.Asinh(1.0 / (2.0 * bs[i].Q));
                     double xl = Math.Max(PadL, XOf(bs[i].Freq * Math.Pow(2.0, -bwOct / 2.0)));
                     double xr = Math.Min(PadL + PlotW, XOf(bs[i].Freq * Math.Pow(2.0, bwOct / 2.0)));
-                    dc.DrawLine(Theme.PenBw, new Point(xl, c.Y), new Point(xr, c.Y));
-                    dc.DrawLine(Theme.PenBw, new Point(xl, c.Y - 5), new Point(xl, c.Y + 5));
-                    dc.DrawLine(Theme.PenBw, new Point(xr, c.Y - 5), new Point(xr, c.Y + 5));
+                    var bwPen = new Pen(cPointBrush[i], 3.0);
+                    dc.DrawLine(bwPen, new Point(xl, c.Y), new Point(xr, c.Y));
+                    dc.DrawLine(bwPen, new Point(xl, c.Y - 5), new Point(xl, c.Y + 5));
+                    dc.DrawLine(bwPen, new Point(xr, c.Y - 5), new Point(xr, c.Y + 5));
                 }
 
                 double r = active ? 9.0 : 6.5;
-                Brush fill = bs[i].Gain >= 0 ? Theme.AccentBrush : Theme.CutBrush;
                 dc.PushOpacity(eqOn ? 1.0 : 0.5);
-                dc.DrawEllipse(fill, bs[i].Extra ? Theme.PenExtra : Theme.PenPoint, c, r, r);
+                dc.DrawEllipse(cPointBrush[i], bs[i].Extra ? Theme.PenExtra : Theme.PenPoint, c, r, r);
                 dc.Pop();
 
                 if (active)

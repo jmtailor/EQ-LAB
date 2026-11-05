@@ -268,8 +268,14 @@ namespace EqLabWin
             return Math.Round(Math.Max(MinQ, Math.Min(MaxQ, q)), 2);
         }
 
+        static int version;
+
+        /// <summary>대역이나 켜짐 상태가 바뀔 때마다 늘어나는 번호. 화면이 곡선을 다시 계산할지 판단하는 데 쓴다.</summary>
+        public static int Version { get { return Volatile.Read(ref version); } }
+
         static void Touch()
         {
+            Interlocked.Increment(ref version);
             var h = Changed;
             if (h != null) h();
             applyTimer.Change(60, Timeout.Infinite);
